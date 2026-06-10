@@ -1,0 +1,81 @@
+# ============================================================================
+# Meridian — research configuration
+# Single source of truth for the universe, strategy, costs, and validation.
+# Everything downstream reads from here so runs are reproducible and auditable.
+# ============================================================================
+
+seed: 42                       # global RNG seed (numpy, sklearn, torch)
+
+data:
+  # 8 liquid majors with the longest available daily history on Yahoo Finance.
+  # NOTE: this list contains only *currently listed* coins, so the backtest has
+  # inherent survivorship bias (see research/report.md). Documented, not hidden.
+  universe:
+    - BTC-USD
+    - ETH-USD
+    - BNB-USD
+    - XRP-USD
+    - ADA-USD
+    - SOL-USD
+    - DOGE-USD
+    - LTC-USD
+  start: "2019-01-01"          # history start (assets join as they list)
+  history_years: 6
+  cache_dir: "data"
+  min_history_days: 250        # drop an asset-day until it has this much history
+
+strategy:
+  sma_short: 50                # fast SMA (base crossover trigger)
+  sma_long: 200               # slow SMA
+  atr_period: 14
+  # Cross-sectional overlay: rank by blended trend + risk-adjusted momentum.
+  momentum_lookback: 90        # trading days for cross-sectional momentum
+  vol_lookback: 30             # realized-vol estimate window (for sizing)
+  top_k: 3                     # go long the top_k ranked, short the bottom_k
+  bottom_k: 3
+  rebalance: "W"               # rebalance frequency (W = weekly)
+
+risk:
+  target_portfolio_vol: 0.20   # annualized vol target for the book
+  max_asset_weight: 0.40       # cap on any single-asset gross weight
+  max_gross_leverage: 2.0      # sum |w| cap
+  vol_floor: 0.01              # daily vol floor to avoid div-by-zero blow-ups
+
+costs:
+  taker_fee_bps: 10.0          # 0.10% per side — realistic retail crypto taker
+  slippage_bps: 5.0            # base slippage per side on traded notional
+  spread_bps: 4.0              # half-spread crossing cost per side
+  # Sensitivity sweep multipliers applied to the whole cost stack.
+  sweep_multipliers: [0.0, 0.5, 1.0, 2.0, 4.0]
+
+validation:
+  walk_forward:
+    train_years: 3
+    test_months: 6
+    anchored: false            # false = rolling window, true = expanding
+  purged_cv:
+    n_splits: 6
+    embargo_frac: 0.01         # embargo as a fraction of total sample length
+
+ml:
+  lstm:
+    window: 60                 # input sequence length (days)
+    horizon: 5                 # forecast horizon (days) — predict log-returns
+    units: 32
+    dropout: 0.2
+    epochs: 30
+    batch_size: 32
+    target: "logret"           # "logret" or "vol"
+  rf_meta:
+    n_estimators: 300
+    min_samples_leaf: 5
+    max_depth: 6
+    # Triple-barrier labeling for the meta-label target.
+    pt_atr_mult: 2.0           # profit-take = pt_atr_mult * ATR
+    sl_atr_mult: 2.0           # stop-loss   = sl_atr_mult * ATR
+    max_hold_days: 30          # vertical (time) barrier
+    take_threshold: 0.5        # P(profit) above which we TAKE the signal
+  regime:
+    lookback: 252              # trailing window the IsoForest fits on
+    contamination: 0.05
+    suppress_scale: 0.3        # scale exposure to this when regime is abnormal

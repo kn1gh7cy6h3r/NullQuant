@@ -1,0 +1,363 @@
+/* ============================================================================
+   meridian.css — Linear.app-inspired UI for Meridian.
+   No neon, no glow, no shadows, no pulse. Frosted glass, flat surfaces.
+   Loaded automatically by Dash from the assets/ folder.
+   ============================================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+
+:root {
+    --bg:        #0a0a0a;
+    --surface:   #0f0f0f;
+    --card:      rgba(255,255,255,0.03);
+    --border:    rgba(255,255,255,0.06);
+    --hover:     rgba(255,255,255,0.04);
+    --active:    rgba(255,255,255,0.08);
+    --text:      #ededed;
+    --text-2:    #737373;
+    --text-3:    #404040;
+    --accent:    #ffffff;
+    --pos:       #22c55e;
+    --neg:       #ef4444;
+    --warn:      #f59e0b;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+}
+
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+}
+
+#react-entry-point, #_dash-app-content { height: 100%; }
+
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* ── Scrollbars ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
+
+/* ── App shell ────────────────────────────────────────────────────────────── */
+.app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
+.header {
+    height: 48px;
+    flex: 0 0 48px;
+    display: flex;
+    align-items: center;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    width: 100%;
+    overflow: hidden;
+    z-index: 50;
+}
+
+.hdr-left {
+    width: 200px;
+    flex: 0 0 200px;
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+}
+
+.wordmark {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    color: var(--text);
+}
+
+.hdr-right {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 16px;
+    min-width: 0;
+}
+
+.hdr-spacer { flex: 1; }
+
+.hdr-center {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+}
+
+.hdr-pair-label {
+    font-size: 11px;
+    color: var(--text-2);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.hdr-price {
+    font-size: 18px;
+    font-weight: 300;
+    color: var(--text);
+}
+
+.hdr-stats {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 22px;
+}
+
+.hdr-stat { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.hdr-stat .lbl {
+    font-size: 11px;
+    color: var(--text-2);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.hdr-stat .val { font-size: 13px; font-weight: 500; color: var(--text); }
+
+/* ── Signal pill (plain, no glow) ─────────────────────────────────────────── */
+.pill {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 4px 12px;
+    border-radius: 6px;
+}
+.pill-buy     { color: var(--pos);    background: rgba(34,197,94,0.10); }
+.pill-sell    { color: var(--neg);    background: rgba(239,68,68,0.10); }
+.pill-warn    { color: var(--warn);   background: rgba(245,158,11,0.10); }
+.pill-neutral { color: var(--text-2); background: rgba(255,255,255,0.05); }
+
+/* ── Body row: sidebar + main ─────────────────────────────────────────────── */
+.body-row {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────────────── */
+.sidebar {
+    width: 200px;
+    flex: 0 0 200px;
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.nav {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 12px 0;
+}
+
+.nav-item {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 9px 20px;
+    color: var(--text-2);
+    font-size: 13px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    user-select: none;
+    transition: background 120ms ease, color 120ms ease;
+}
+.nav-item:hover { background: var(--hover); color: var(--text); }
+.nav-item.active {
+    background: var(--active);
+    color: var(--text);
+    border-left: 2px solid var(--accent);
+}
+.nav-item svg { width: 16px; height: 16px; stroke-width: 1.75; }
+
+.sidebar-footer {
+    padding: 14px 20px;
+    font-size: 11px;
+    color: var(--text-3);
+    letter-spacing: 0.04em;
+}
+
+/* ── Main content area ────────────────────────────────────────────────────── */
+.main {
+    flex: 1;
+    position: relative;
+    min-width: 0;
+    background: var(--bg);
+}
+
+/* Each panel exactly fills the main area; only the active one is shown. */
+.panel {
+    display: none;
+    position: absolute;
+    inset: 0;
+}
+.panel.active { display: block; }
+.panel.split.active { display: flex; }
+.panel.scroll { overflow-y: auto; }
+.panel.pad { padding: 24px; }
+
+/* Charts fill edge to edge, no card, no radius, seamless with the page bg. */
+.chart-fill { width: 100%; height: 100%; }
+.chart-fill .js-plotly-plot, .chart-fill .plot-container { height: 100% !important; }
+
+/* ── Banners (no blink, no glow) ──────────────────────────────────────────── */
+.banner {
+    flex: 0 0 auto;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    padding: 9px 16px;
+    width: 100%;
+}
+.banner-neg  { color: var(--neg);  background: rgba(239,68,68,0.08);
+               border-bottom: 1px solid rgba(239,68,68,0.20); }
+.banner-warn { color: var(--warn); background: rgba(245,158,11,0.08);
+               border-bottom: 1px solid rgba(245,158,11,0.20); }
+
+/* ── Footer ───────────────────────────────────────────────────────────────── */
+.footer {
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: var(--text-3);
+    letter-spacing: 0.04em;
+    padding: 8px 20px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ── Cards (frosted glass) ────────────────────────────────────────────────── */
+.card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+
+/* ── Panel titles ─────────────────────────────────────────────────────────── */
+.panel-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin: 0 0 16px 0;
+}
+
+/* ── Stat cards (Overview) ────────────────────────────────────────────────── */
+.stat-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 16px;
+}
+.statcard {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    transition: background 120ms ease;
+}
+.statcard:hover { background: rgba(255,255,255,0.02); }
+.statcard .lbl {
+    font-size: 11px;
+    color: var(--text-2);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 10px;
+}
+.statcard .val { font-size: 20px; font-weight: 300; color: var(--text); }
+.statcard .sub { font-size: 11px; color: var(--text-2); margin-top: 6px; }
+
+.two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+
+.kv { display: flex; justify-content: space-between; padding: 7px 0;
+      border-bottom: 1px solid var(--border); }
+.kv:last-child { border-bottom: none; }
+.kv .k { color: var(--text-2); font-size: 12px; }
+.kv .v { color: var(--text); font-size: 12px; font-weight: 500; }
+
+/* ── Trade Log + Risk split ───────────────────────────────────────────────── */
+.col-trades { width: 60%; flex: 0 0 60%; padding: 20px; overflow-y: auto; }
+.col-risk   { width: 40%; flex: 0 0 40%; padding: 20px; overflow-y: auto;
+              border-left: 1px solid var(--border); }
+
+.metric-section {
+    font-size: 11px;
+    color: var(--text-2);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 0 0 12px 0;
+}
+.metric-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 10px;
+    margin-bottom: 22px;
+}
+.metric {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+}
+.metric .lbl {
+    font-size: 11px; color: var(--text-2);
+    text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px;
+}
+.metric .val { font-size: 20px; font-weight: 300; }
+.metric .sub { font-size: 11px; color: var(--text-2); margin-top: 4px; }
+
+/* ── ML Intel cards ───────────────────────────────────────────────────────── */
+.ml-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+}
+.mlcard {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    padding: 22px;
+    min-height: 200px;
+}
+.mlcard .title {
+    font-size: 13px; font-weight: 600; color: var(--text);
+    text-transform: uppercase; letter-spacing: 0.05em;
+}
+.mlcard .subtitle { font-size: 11px; color: var(--text-2); margin: 5px 0 18px 0; }
+.ml-disclaimer { font-size: 11px; color: var(--text-3); margin-top: 18px; }
+
+/* ── Loading ──────────────────────────────────────────────────────────────── */
+._dash-loading { color: var(--text-2); }
