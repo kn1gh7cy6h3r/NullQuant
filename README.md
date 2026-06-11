@@ -106,15 +106,5 @@ SMA/ATR/momentum params, vol target, cost assumptions + sweep, validation
 windows, and per-model ML settings. Change the config, re-run the pipeline,
 reproduce exactly.
 
-## What I'd claim in an interview
-
-- I can build a **causal, cost-aware, multi-asset backtester** and prove its
-  accounting identities and no-look-ahead properties with tests.
-- I know **why** plain k-fold leaks in finance and implement **purged CV with
-  embargo** and **Deflated Sharpe** to defend against overfitting.
-- I reframed three ML models from in-sample decoration into **honestly evaluated
-  components**, and — finding they don't add OOS value — I **report that** rather
-  than hiding it. That's the judgment the work is meant to demonstrate.
-
 See [`research/report.md`](research/report.md) for the full methodology, results,
 limitations, and next directions.
