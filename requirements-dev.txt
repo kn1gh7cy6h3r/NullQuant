@@ -1,0 +1,10 @@
+# Minimal dependencies for running the foundation test suite in CI.
+# Does NOT include torch, keras, dash, plotly, yfinance — tests use synthetic
+# data and must not require ML, UI, or network modules.
+
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.11.0
+scikit-learn>=1.5
+pyyaml>=6.0
+pytest>=8.0

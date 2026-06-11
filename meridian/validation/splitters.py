@@ -75,41 +75,40 @@ class PurgedKFold:
         self.t1 = t1.sort_index()
         self.embargo_frac = float(embargo_frac)
 
-    def split(self, X: pd.DataFrame):
-        """Yield (train_positions, test_positions) as integer arrays into X.
-
-        X must be indexed by event_date and aligned with t1's index.
+    def split(self, X: pd.DataFrame | None = None):
         """
-        if not X.index.equals(self.t1.index):
-            # Align defensively; both must share event_date ordering.
-            t1 = self.t1.reindex(X.index)
-        else:
-            t1 = self.t1
-        n = len(X)
+        Yield (train_positions, test_positions) as integer arrays.
+
+        Event START times come from ``t1.index`` and event END times from
+        ``t1.values`` — both positional, so the splitter is robust to duplicate
+        event dates (e.g. the same crossover date across several assets) and does
+        not require ``X.index`` to be the event timestamps. The caller's ``t1``
+        (and any aligned ``X``) MUST already be sorted by event start time; the
+        returned positions index into that order.
+        """
+        starts = pd.DatetimeIndex(self.t1.index)
+        ends = pd.DatetimeIndex(np.asarray(self.t1.values))
+        n = len(self.t1)
         indices = np.arange(n)
         embargo = int(n * self.embargo_frac)
-        fold_bounds = [(i[0], i[-1] + 1) for i in np.array_split(indices, self.n_splits)]
-
-        event_dates = X.index
-        t1_vals = pd.DatetimeIndex(t1.values)
+        fold_bounds = [(i[0], i[-1] + 1) for i in np.array_split(indices, self.n_splits)
+                       if len(i) > 0]
 
         for start, end in fold_bounds:
             test_pos = indices[start:end]
-            test_start_time = event_dates[start]
-            test_end_time = t1_vals[test_pos].max()
+            test_start_time = starts[test_pos].min()
+            test_end_time = ends[test_pos].max()
 
-            # Purge: drop train samples whose [event_date, t1] overlaps the test
-            # interval [test_start_time, test_end_time].
             train_mask = np.ones(n, dtype=bool)
             train_mask[start:end] = False
-            for j in indices:
-                if not train_mask[j]:
-                    continue
-                ev, ev_t1 = event_dates[j], t1_vals[j]
-                if (ev <= test_end_time) and (ev_t1 >= test_start_time):
-                    train_mask[j] = False
 
-            # Embargo: drop a buffer of samples immediately after the test fold.
+            # Purge: drop any train label whose outcome window [start, t1] overlaps
+            # the test fold's [test_start_time, test_end_time] window.
+            overlap = np.asarray(starts <= test_end_time) & np.asarray(ends >= test_start_time)
+            train_mask &= ~overlap
+
+            # Embargo: also drop a buffer of samples right after the test fold,
+            # where serial correlation could still leak information.
             if embargo > 0:
                 emb_hi = min(end + embargo, n)
                 train_mask[end:emb_hi] = False
