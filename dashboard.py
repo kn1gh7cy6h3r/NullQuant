@@ -1,675 +1,198 @@
 """
-dashboard.py — Visual layer for Meridian.
+dashboard.py — interactive view of the Meridian research system.
 
-Linear.app-inspired UI: flat near-black surfaces, frosted-glass cards, a fixed
-left sidebar, an always-visible header, and one content panel at a time. No
-neon, no glow, no shadows, no pulse animations.
+This is a MONITORING/REPORTING surface over the rigorous engine in the
+`meridian` package, not a second source of truth. The heavy research (backtest,
+overlays, metrics, cost sweep) is computed ONCE and cached; the 30s interval
+only refreshes display-only live prices. Daily bars barely change intraday, and
+nothing here mutates the historical panel — so there is no repainting.
 
-Architecture
-------------
-  • Header bar (48px, full width) — wordmark, live BTC/USD price, signal pill
-    and inline Portfolio / Total Return / Max Drawdown stats.
-  • Fixed 200px sidebar — Lucide-icon navigation, never scrolls.
-  • Main content — every panel lives in the DOM; the sidebar shows exactly one
-    at a time (client-side, see assets/meridian.js). Default: Price & SMAs.
+Panels (fixed sidebar, one at a time):
+  Overview  · headline metrics + honest verdict
+  Equity    · strategy variants vs benchmarks (the headline chart)
+  Positions · current target weights + weight history heatmap
+  Signals   · per-asset trend state and latest direction
+  Costs     · Sharpe vs cost-multiplier robustness curve
+  ML Intel  · RF meta AUC, regime stats, LSTM-vs-random-walk (honest)
 
-The data pipeline (data_manager -> signals -> risk_manager -> ml_engine) and the
-single interval-driven callback are preserved exactly; only presentation changed.
-Custom CSS lives in assets/meridian.css.
+Styling lives in assets/meridian.css; sidebar navigation in assets/meridian.js.
 """
 
 from __future__ import annotations
 
+import json
 import traceback
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import dash
 from dash import dcc, html, dash_table
 from dash.dependencies import Input, Output
 
-from data_manager import get_full_dataset
-from signals import process, current_signal, max_drawdown, total_return
-from risk_manager import (
-    add_atr, run_backtest, MARGIN_CALL_FLOOR, RISK_PER_TRADE_PCT,
-    ATR_PERIOD, ATR_STOP_MULT,
-)
-# ML intelligence layer (Models A/B/C). Imported defensively: if the ML stack
-# can't load for any reason the rest of the dashboard must keep working, so we
-# fall back to reporting every model as unavailable (ml stays None).
-try:
-    import ml_engine
-    from ml_engine import MLResults, RF_WEAK_THRESHOLD
-    ML_IMPORT_OK = True
-except Exception as _ml_exc:  # pragma: no cover - defensive
-    ML_IMPORT_OK = False
-    _ML_IMPORT_ERR = str(_ml_exc)
+from meridian.config import load_config, PROJECT_ROOT
+from meridian.seeds import set_global_seed
+from meridian.data.loader import load_history, fetch_live_prices
+from meridian.signals.base import target_directions, trend_state
+from meridian.portfolio.costs import CostModel
+from meridian.portfolio.backtest import run_backtest
+from meridian.metrics import performance as perf
+from meridian.ablation import build_overlays, run_cost_sweep, _exposure_product
 
-# ── Palette (Linear.app inspired — no neon, no glow) ──────────────────────────
+# ── Palette (matches assets/meridian.css) ─────────────────────────────────────
+BG, SURFACE = "#0a0a0a", "#0f0f0f"
+TEXT, TEXT2, TEXT3 = "#ededed", "#737373", "#404040"
+POS, NEG, WARN, ACCENT = "#22c55e", "#ef4444", "#f59e0b", "#ffffff"
+BORDER, GRID = "rgba(255,255,255,0.06)", "rgba(255,255,255,0.04)"
+PALETTE = ["#ededed", "#22c55e", "#ef4444", "#f59e0b", "#60a5fa", "#a78bfa", "#f472b6", "#2dd4bf"]
+REFRESH_MS = 30_000
 
-BG       = "#0a0a0a"   # Page / chart background
-SURFACE  = "#0f0f0f"   # Sidebar / header
-TEXT     = "#ededed"   # Primary text
-TEXT2    = "#737373"   # Secondary text
-TEXT3    = "#404040"   # Tertiary text
-ACCENT   = "#ffffff"   # Accent
-POS      = "#22c55e"   # Positive / BUY
-NEG      = "#ef4444"   # Negative / SELL
-WARN     = "#f59e0b"   # Warning
-BORDER   = "rgba(255,255,255,0.06)"
-GRID     = "rgba(255,255,255,0.04)"
-
-REFRESH_MS = 30_000    # 30-second live refresh
-APP_VERSION = "v2.0"
-LSTM_HORIZON_DAYS = 7
-ANOMALY_WINDOW_DAYS = 30
+_CFG = load_config()
+_RESULTS: dict | None = None  # cached heavy research output
 
 
-def _rgba(hex_color: str, alpha: float) -> str:
-    """Convert a #rrggbb hex string to an rgba(…) CSS string."""
-    h = hex_color.lstrip("#")
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    return f"rgba({r},{g},{b},{alpha})"
-
-
-# ── Shared chart layout ───────────────────────────────────────────────────────
-
-_BASE = dict(
-    paper_bgcolor=BG,
-    plot_bgcolor=BG,
-    font=dict(color=TEXT, family="'Inter','system-ui',sans-serif", size=11),
-    xaxis=dict(
-        gridcolor=GRID, showgrid=True, zeroline=False,
-        tickfont=dict(color=TEXT2, size=10),
-        linecolor=BORDER,
-        showspikes=True, spikecolor=TEXT2, spikethickness=1,
-        spikedash="solid", spikemode="across", spikesnap="cursor",
-    ),
-    yaxis=dict(
-        gridcolor=GRID, showgrid=True, zeroline=False,
-        tickfont=dict(color=TEXT2, size=10),
-        linecolor=BORDER,
-        showspikes=True, spikecolor=TEXT2, spikethickness=1,
-        spikedash="solid", spikemode="across",
-    ),
-    margin=dict(l=60, r=20, t=20, b=28),
-    showlegend=False,
-    hovermode="x",
-    hoverlabel=dict(
-        bgcolor="#111111",
-        bordercolor="rgba(0,0,0,0)",
-        font=dict(color=TEXT, size=11, family="'Inter','system-ui',sans-serif"),
-    ),
-    transition=dict(duration=300, easing="cubic-in-out"),
-    dragmode="pan",
-)
-
-
-def _L(**overrides) -> dict:
-    """Merge _BASE with per-chart overrides (nested dicts shallow-merged)."""
-    out = dict(_BASE)
-    for k, v in overrides.items():
-        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
-            out[k] = {**out[k], **v}
-        else:
-            out[k] = v
-    return out
-
-
-_GRAPH_CONFIG = dict(
-    displayModeBar=False,
-    scrollZoom=True,
-    displaylogo=False,
-    doubleClick="reset",
-)
-
-
-# ── Regime-band helper ────────────────────────────────────────────────────────
-
-def _add_regime_bands(fig: go.Figure, df: pd.DataFrame) -> None:
-    """Shade translucent vertical bands per signal regime (green BUY, red SELL)."""
-    signal_rows = df[df["Signal"].notna()]
-    if signal_rows.empty:
-        return
-    signals = list(zip(signal_rows.index, signal_rows["Signal"]))
-    for i, (start, sig) in enumerate(signals):
-        end = signals[i + 1][0] if i + 1 < len(signals) else df.index[-1]
-        fill = _rgba(POS, 0.06) if sig == "BUY" else _rgba(NEG, 0.06)
-        fig.add_vrect(x0=start, x1=end, fillcolor=fill, line_width=0, layer="below")
-
-
-# ── Panel: Price & SMAs ───────────────────────────────────────────────────────
-
-def _price_chart(df: pd.DataFrame, ml: "MLResults | None" = None) -> go.Figure:
-    """
-    Candlestick price with SMA50/SMA200 overlays, ATR trailing stop, optional
-    LSTM forecast + confidence band, BUY/SELL markers, anomaly bands, and a
-    floating info pill (annotation) in the top-left corner. Edge to edge.
-    """
-    fig = go.Figure()
-
-    # Model C — barely-visible anomaly bands, drawn first so they sit beneath.
-    if ml is not None and ml.anomaly.ready and ml.anomaly.anomaly_dates:
-        for d in ml.anomaly.anomaly_dates:
-            fig.add_vrect(
-                x0=d - pd.Timedelta(hours=12), x1=d + pd.Timedelta(hours=12),
-                fillcolor=_rgba(NEG, 0.04), line_width=0, layer="below",
-            )
-
-    # Candlesticks — green up, red down, grey #737373 wicks & body outlines.
-    fig.add_trace(go.Candlestick(
-        x=df.index, open=df["Open"], high=df["High"],
-        low=df["Low"], close=df["Close"],
-        name="BTC/USD",
-        increasing=dict(line=dict(color=TEXT2, width=1), fillcolor=POS),
-        decreasing=dict(line=dict(color=TEXT2, width=1), fillcolor=NEG),
-        whiskerwidth=0.4,
-        hoverinfo="x+y",
-    ))
-
-    # SMA50 — white at 60% opacity, thin. SMA200 — grey, thin dashed.
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df["SMA50"], mode="lines", name="SMA50",
-        line=dict(color=_rgba(ACCENT, 0.6), width=1),
-        hovertemplate="SMA50 %{y:$,.0f}<extra></extra>",
-    ))
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df["SMA200"], mode="lines", name="SMA200",
-        line=dict(color=TEXT2, width=1, dash="dash"),
-        hovertemplate="SMA200 %{y:$,.0f}<extra></extra>",
-    ))
-
-    # Trailing stop — amber, dotted, only where a position was open.
-    if "StopLine" in df.columns and df["StopLine"].notna().any():
-        fig.add_trace(go.Scatter(
-            x=df.index, y=df["StopLine"], mode="lines", name="Trailing stop",
-            line=dict(color=WARN, width=1.5, dash="dot"),
-            connectgaps=False,
-            hovertemplate="stop %{y:$,.0f}<extra></extra>",
-        ))
-
-    # BUY markers below the candle, SELL markers above.
-    buys = df[df["Signal"] == "BUY"]
-    sells = df[df["Signal"] == "SELL"]
-    if not buys.empty:
-        fig.add_trace(go.Scatter(
-            x=buys.index, y=buys["Low"] * 0.985, mode="markers", name="BUY",
-            marker=dict(color=POS, size=9, symbol="triangle-up"),
-            hovertemplate="BUY<extra></extra>",
-        ))
-    if not sells.empty:
-        fig.add_trace(go.Scatter(
-            x=sells.index, y=sells["High"] * 1.015, mode="markers", name="SELL",
-            marker=dict(color=NEG, size=9, symbol="triangle-down"),
-            hovertemplate="SELL<extra></extra>",
-        ))
-
-    # Model A — 7-day LSTM forecast (grey dotted extension) + confidence band.
-    if ml is not None and ml.lstm.ready and ml.lstm.forecast_prices:
-        last_date = df.index[-1]
-        last_close = float(df["Close"].iloc[-1])
-        fx = [last_date] + list(ml.lstm.forecast_dates)
-        fy = [last_close] + list(ml.lstm.forecast_prices)
-        up = [last_close] + list(ml.lstm.band_upper)
-        lo = [last_close] + list(ml.lstm.band_lower)
-        fig.add_trace(go.Scatter(
-            x=fx, y=up, mode="lines", line=dict(width=0),
-            showlegend=False, hoverinfo="skip",
-        ))
-        fig.add_trace(go.Scatter(
-            x=fx, y=lo, mode="lines", line=dict(width=0),
-            fill="tonexty", fillcolor=_rgba(ACCENT, 0.03),
-            name="LSTM band", hoverinfo="skip",
-        ))
-        fig.add_trace(go.Scatter(
-            x=fx, y=fy, mode="lines", name="LSTM forecast",
-            line=dict(color=TEXT2, width=1.5, dash="dot"),
-            hovertemplate="forecast %{y:$,.0f}<extra></extra>",
-        ))
-
-    # Floating info pill — current price + SMA values, top-left corner.
-    fig.add_annotation(
-        xref="paper", yref="paper", x=0.0, y=1.0,
-        xanchor="left", yanchor="top",
-        text=_price_overlay_text(df),
-        showarrow=False, align="left",
-        font=dict(color=TEXT, size=11, family="'Inter','system-ui',sans-serif"),
-        bgcolor=_rgba(ACCENT, 0.03), bordercolor=BORDER, borderwidth=1,
-        borderpad=8,
-    )
-
-    fig.update_layout(**_L(
-        yaxis=dict(tickprefix="$", tickformat=",.0f"),
-        xaxis=dict(
-            rangeslider=dict(visible=True, thickness=0.06, bgcolor=SURFACE),
-            showspikes=True, spikecolor=TEXT2, spikethickness=1,
-            spikedash="solid", spikemode="across", spikesnap="cursor",
-        ),
-        margin=dict(l=60, r=20, t=20, b=10),
-    ))
-    return fig
-
-
-def _price_overlay_text(df: pd.DataFrame) -> str:
-    """Build the multi-line text for the price chart's floating info pill."""
-    last = df.iloc[-1]
-    def fmt(v):
-        return f"${v:,.0f}" if pd.notna(v) else "—"
-    return (
-        f"<b>BTC/USD</b>  {fmt(last['Close'])}<br>"
-        f"SMA50 {fmt(last['SMA50'])}   SMA200 {fmt(last['SMA200'])}"
-    )
-
-
-# ── Panel: Signals ────────────────────────────────────────────────────────────
-
-def _signal_chart(df: pd.DataFrame, ml: "MLResults | None" = None) -> go.Figure:
-    """
-    Regime bands (green = long, red = cash) over a dim price line, with clean
-    BUY/SELL markers and STRONG/WEAK strength labels from the Random Forest.
-    """
-    fig = go.Figure()
-    _add_regime_bands(fig, df)
-
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df["Close"], mode="lines", name="BTC/USD",
-        line=dict(color=_rgba(TEXT, 0.20), width=1),
-        hovertemplate="%{y:$,.0f}<extra></extra>",
-    ))
-
-    buys = df[df["Signal"] == "BUY"]
-    sells = df[df["Signal"] == "SELL"]
-    if not buys.empty:
-        fig.add_trace(go.Scatter(
-            x=buys.index, y=buys["Close"], mode="markers", name="BUY",
-            marker=dict(color=POS, size=10, symbol="triangle-up"),
-            hovertemplate="BUY %{y:$,.0f}<extra></extra>",
-        ))
-    if not sells.empty:
-        fig.add_trace(go.Scatter(
-            x=sells.index, y=sells["Close"], mode="markers", name="SELL",
-            marker=dict(color=NEG, size=10, symbol="triangle-down"),
-            hovertemplate="SELL %{y:$,.0f}<extra></extra>",
-        ))
-
-    # Model B — STRONG/WEAK confidence labels above each historical signal.
-    if ml is not None and ml.rf.ready and ml.rf.signal_confidences:
-        strong_x, strong_y, strong_t = [], [], []
-        weak_x, weak_y, weak_t = [], [], []
-        for d, info in ml.rf.signal_confidences.items():
-            if d not in df.index:
-                continue
-            y = df.loc[d, "Close"]
-            label = f"{info['strength']} {info['confidence']:.0f}%"
-            if info["strength"] == "STRONG":
-                strong_x.append(d); strong_y.append(y); strong_t.append(label)
-            else:
-                weak_x.append(d); weak_y.append(y); weak_t.append(label)
-        if strong_x:
-            fig.add_trace(go.Scatter(
-                x=strong_x, y=strong_y, mode="text", text=strong_t,
-                textposition="top center", textfont=dict(color=POS, size=9),
-                hoverinfo="skip", showlegend=False,
-            ))
-        if weak_x:
-            fig.add_trace(go.Scatter(
-                x=weak_x, y=weak_y, mode="text", text=weak_t,
-                textposition="top center", textfont=dict(color=WARN, size=9),
-                hoverinfo="skip", showlegend=False,
-            ))
-
-    fig.update_layout(**_L(
-        yaxis=dict(tickprefix="$", tickformat=",.0f"),
-        xaxis=dict(
-            rangeslider=dict(visible=True, thickness=0.06, bgcolor=SURFACE),
-            showspikes=True, spikecolor=TEXT2, spikethickness=1,
-            spikedash="solid", spikemode="across", spikesnap="cursor",
-        ),
-        margin=dict(l=60, r=20, t=20, b=10),
-    ))
-    return fig
-
-
-# ── Panel: Drawdown ───────────────────────────────────────────────────────────
-
-def _drawdown_chart(df: pd.DataFrame) -> go.Figure:
-    """Area drawdown curve (red), worst point annotated. Edge to edge."""
-    fig = go.Figure()
-    dd = df["Drawdown"].dropna()
-    if not dd.empty:
-        fig.add_trace(go.Scatter(
-            x=df.index, y=df["Drawdown"], mode="lines", name="Drawdown",
-            line=dict(color=NEG, width=1.5),
-            fill="tozeroy", fillcolor=_rgba(NEG, 0.08),
-            hovertemplate="%{y:.2f}%<extra></extra>",
-        ))
-        fig.add_hline(y=0, line=dict(color=BORDER, width=1))
-        worst_idx, worst_val = dd.idxmin(), dd.min()
-        fig.add_annotation(
-            x=worst_idx, y=worst_val, text=f"Worst {worst_val:.1f}%",
-            showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=1,
-            arrowcolor=NEG, ax=46, ay=-26,
-            font=dict(color=NEG, size=10),
-            bgcolor=_rgba(BG, 0.9), bordercolor=BORDER, borderwidth=1, borderpad=5,
-        )
-    fig.update_layout(**_L(yaxis=dict(ticksuffix="%")))
-    return fig
-
-
-# ── Panel: Equity ─────────────────────────────────────────────────────────────
-
-def _equity_chart(df: pd.DataFrame, trades: list[dict] | None = None) -> go.Figure:
-    """Area equity curve (green), $100k baseline, trade entry/exit markers."""
-    fig = go.Figure()
-    eq = df["Portfolio"].dropna()
-    if not eq.empty:
-        fig.add_trace(go.Scatter(
-            x=df.index, y=df["Portfolio"], mode="lines", name="Portfolio",
-            line=dict(color=POS, width=2),
-            fill="tozeroy", fillcolor=_rgba(POS, 0.06),
-            hovertemplate="$%{y:,.0f}<extra></extra>",
-        ))
-        fig.add_hline(
-            y=100_000, line=dict(color=_rgba(TEXT, 0.18), width=1, dash="dash"),
-            annotation_text="$100k", annotation_position="top left",
-            annotation_font=dict(color=TEXT2, size=10),
-        )
-        if trades:
-            entry_x, entry_y, exit_x, exit_y = [], [], [], []
-            for t in trades:
-                ed = t["entry_date"]
-                if ed in df.index:
-                    entry_x.append(ed); entry_y.append(df.loc[ed, "Portfolio"])
-                xd = t["exit_date"]
-                if xd is not None and xd in df.index:
-                    exit_x.append(xd); exit_y.append(df.loc[xd, "Portfolio"])
-            if entry_x:
-                fig.add_trace(go.Scatter(
-                    x=entry_x, y=entry_y, mode="markers", name="Entry",
-                    marker=dict(color=POS, size=8, symbol="triangle-up"),
-                    hovertemplate="entry $%{y:,.0f}<extra></extra>",
-                ))
-            if exit_x:
-                fig.add_trace(go.Scatter(
-                    x=exit_x, y=exit_y, mode="markers", name="Exit",
-                    marker=dict(color=NEG, size=8, symbol="triangle-down"),
-                    hovertemplate="exit $%{y:,.0f}<extra></extra>",
-                ))
-    fig.update_layout(**_L(yaxis=dict(tickprefix="$", tickformat=",.0f")))
-    return fig
-
-
-# ── Empty / error placeholder ─────────────────────────────────────────────────
-
-def _empty_figure(message: str = "Loading…") -> go.Figure:
-    fig = go.Figure()
-    fig.add_annotation(
-        text=message, xref="paper", yref="paper", x=0.5, y=0.5,
-        showarrow=False, font=dict(color=TEXT2, size=14),
-    )
-    fig.update_layout(
+def _base_layout(**over) -> dict:
+    base = dict(
         paper_bgcolor=BG, plot_bgcolor=BG,
-        xaxis=dict(visible=False), yaxis=dict(visible=False),
-        margin=dict(l=0, r=0, t=0, b=0),
+        font=dict(color=TEXT, family="'Inter',system-ui,sans-serif", size=11),
+        xaxis=dict(gridcolor=GRID, zeroline=False, linecolor=BORDER,
+                   tickfont=dict(color=TEXT2, size=10)),
+        yaxis=dict(gridcolor=GRID, zeroline=False, linecolor=BORDER,
+                   tickfont=dict(color=TEXT2, size=10)),
+        margin=dict(l=56, r=20, t=20, b=30),
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor="#111111", bordercolor="rgba(0,0,0,0)",
+                        font=dict(color=TEXT, size=11)),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=TEXT2, size=10),
+                    orientation="h", y=1.02, x=0),
     )
+    for k, v in over.items():
+        base[k] = {**base[k], **v} if k in base and isinstance(base[k], dict) and isinstance(v, dict) else v
+    return base
+
+
+_GRAPH_CFG = dict(displayModeBar=False, scrollZoom=True, displaylogo=False)
+
+
+def compute_results() -> dict:
+    """Run the backtest variants + overlays + cost sweep once; cache the result."""
+    set_global_seed(_CFG.seed)
+    panel = load_history(_CFG)
+    direction = target_directions(panel, _CFG)
+    cost = CostModel.from_config(_CFG, multiplier=1.0)
+
+    overlays = build_overlays(panel, _CFG)
+    regime, meta = overlays.get("regime"), overlays.get("meta")
+    meta_res = overlays.get("_meta_result")
+    idx = panel.close.index
+
+    variants = {
+        "baseline": None,
+        "+regime": regime,
+        "+meta": meta,
+        "+regime+meta": _exposure_product(regime, meta, index=idx),
+    }
+    equity, metrics, weights_by_variant = {}, {}, {}
+    bench = None
+    for name, exp in variants.items():
+        res = run_backtest(panel, direction, _CFG, cost, exposure_scale=exp)
+        if bench is None:
+            bench = res.benchmarks
+        equity[name] = res.equity
+        metrics[name] = perf.summary(res.net_returns, benchmark=bench["equal_weight"],
+                                     n_trials=len(variants))
+        weights_by_variant[name] = res.weights
+    for bname, bret in bench.items():
+        equity[f"[bench] {bname}"] = (1.0 + bret.fillna(0.0)).cumprod()
+        metrics[f"[bench] {bname}"] = perf.summary(bret, n_trials=1)
+
+    cost_sweep = run_cost_sweep(panel, _CFG, direction,
+                                best_exposure=variants["+regime+meta"])
+
+    # Read ML diagnostics from the last pipeline run if available (LSTM is slow).
+    summary_path = PROJECT_ROOT / "research" / "results" / "summary.json"
+    ml_summary = {}
+    if summary_path.exists():
+        try:
+            ml_summary = json.loads(summary_path.read_text())
+        except Exception:
+            ml_summary = {}
+
+    ts = trend_state(panel.close, _CFG.strategy.sma_short, _CFG.strategy.sma_long)
+    base_weights = weights_by_variant["baseline"]
+
+    return dict(
+        panel=panel, equity=equity, metrics=metrics,
+        cost_sweep=cost_sweep, base_weights=base_weights,
+        trend=ts, direction=direction, meta_res=meta_res,
+        regime=regime, ml_summary=ml_summary,
+        last_date=idx[-1],
+    )
+
+
+def get_results() -> dict:
+    global _RESULTS
+    if _RESULTS is None:
+        _RESULTS = compute_results()
+    return _RESULTS
+
+
+# ── Figures ───────────────────────────────────────────────────────────────────
+
+def fig_equity(R: dict) -> go.Figure:
+    fig = go.Figure()
+    for i, (name, eq) in enumerate(R["equity"].items()):
+        is_bench = name.startswith("[bench]")
+        fig.add_trace(go.Scatter(
+            x=eq.index, y=eq.values, mode="lines", name=name,
+            line=dict(color=PALETTE[i % len(PALETTE)],
+                      width=2 if not is_bench else 1.5,
+                      dash="dash" if is_bench else "solid"),
+        ))
+    fig.update_layout(**_base_layout(yaxis=dict(type="log", title="growth of $1 (log)")))
     return fig
 
 
-# ── Panel: Trade Log ──────────────────────────────────────────────────────────
-
-# Static column definitions for the trade-log DataTable. All columns always
-# shown (no toggle). The hidden numeric `pnl_num` drives row colouring.
-TRADE_LOG_COLUMNS = [
-    {"name": "Entry Date",  "id": "entry_date"},
-    {"name": "Entry",       "id": "entry_price"},
-    {"name": "Exit Date",   "id": "exit_date"},
-    {"name": "Exit",        "id": "exit_price"},
-    {"name": "Exit Reason", "id": "reason"},
-    {"name": "BTC Units",   "id": "units"},
-    {"name": "Risk $",      "id": "risk"},
-    {"name": "P&L $",       "id": "pnl_dollars"},
-    {"name": "P&L %",       "id": "pnl_pct"},
-    {"name": "Portfolio",   "id": "portfolio_after"},
-    {"name": "pnl_num",     "id": "pnl_num"},  # hidden — drives row colouring
-]
+def fig_weights_bar(R: dict) -> go.Figure:
+    w = R["base_weights"].iloc[-1]
+    w = w[w.abs() > 1e-6].sort_values()
+    colors = [POS if v > 0 else NEG for v in w.values]
+    fig = go.Figure(go.Bar(x=w.values, y=[a.replace("-USD", "") for a in w.index],
+                           orientation="h", marker_color=colors))
+    fig.update_layout(**_base_layout(
+        xaxis=dict(title="target weight (− short / + long)"),
+        margin=dict(l=70, r=20, t=20, b=30)))
+    return fig
 
 
-def _trade_log_data(trades: list[dict]) -> list[dict]:
-    """Turn raw trade dicts into display-ready rows, newest first."""
-    rows = []
-    for t in reversed(trades):
-        is_open = t["status"] == "open"
-        rows.append({
-            "entry_date": t["entry_date"].strftime("%Y-%m-%d"),
-            "entry_price": f"${t['entry_price']:,.0f}",
-            "exit_date": "open" if is_open else t["exit_date"].strftime("%Y-%m-%d"),
-            "exit_price": f"${t['exit_price']:,.0f}",
-            "reason": t["exit_reason"],
-            "units": f"{t['units']:.4f}",
-            "risk": f"${t['dollar_risk']:,.0f} ({t['risk_pct']:.1f}%)",
-            "pnl_dollars": f"${t['pnl_dollars']:+,.0f}" + (" *" if is_open else ""),
-            "pnl_pct": f"{t['pnl_pct']:+.1f}%",
-            "portfolio_after": f"${t['portfolio_after']:,.0f}",
-            "pnl_num": round(t["pnl_dollars"], 2),
-        })
-    return rows
-
-
-# ── Panel: Risk Metrics ───────────────────────────────────────────────────────
-
-def _metric_card(label: str, value: str, color: str = TEXT, sub: str = "") -> html.Div:
-    """A single compact metric tile."""
-    return html.Div(className="metric", children=[
-        html.Div(label, className="lbl"),
-        html.Div(value, className="val", style=dict(color=color)),
-        html.Div(sub, className="sub") if sub else None,
-    ])
-
-
-def _risk_metrics_panel(metrics: dict, state: dict) -> html.Div:
-    """Live position/volatility tiles on top, realised performance below."""
-    atr = state.get("atr")
-    in_pos = state.get("in_position")
-
-    atr_str = f"${atr:,.0f}" if atr else "—"
-    if in_pos:
-        init_stop_str = f"${state['initial_stop']:,.0f}"
-        trail_stop_str = f"${state['trailing_stop']:,.0f}"
-        pos_btc_str = f"{state['units']:.4f} BTC"
-        pos_usd_str = f"${state['position_dollars']:,.0f}"
-        upnl = state["unrealized_pnl"]
-        upnl_str = f"${upnl:+,.0f} ({state['unrealized_pct']:+.1f}%)"
-        stop_color, pos_color = NEG, TEXT
-        upnl_color = POS if upnl >= 0 else NEG
-    else:
-        init_stop_str = trail_stop_str = pos_btc_str = pos_usd_str = "—"
-        upnl_str = "flat"
-        stop_color = pos_color = upnl_color = TEXT2
-
-    wr = metrics["win_rate"]
-    pf = metrics["profit_factor"]
-    pf_str = f"{pf:.2f}" if pf is not None else "∞"
-    sharpe = metrics["sharpe"]
-
-    live_tiles = [
-        _metric_card(f"ATR ({ATR_PERIOD})", atr_str, WARN, "volatility unit"),
-        _metric_card("Initial Stop", init_stop_str, stop_color,
-                     f"entry − {ATR_STOP_MULT:g}×ATR"),
-        _metric_card("Trailing Stop", trail_stop_str, stop_color, "ratchets up only"),
-        _metric_card("Position (BTC)", pos_btc_str, pos_color),
-        _metric_card("Position ($)", pos_usd_str, pos_color),
-        _metric_card("Unrealised P&L", upnl_str, upnl_color),
-    ]
-    perf_tiles = [
-        _metric_card("Win Rate", f"{wr:.0f}%", POS if wr >= 50 else NEG,
-                     f"{metrics['wins']}W / {metrics['losses']}L"),
-        _metric_card("Avg Win", f"${metrics['avg_win']:,.0f}", POS),
-        _metric_card("Avg Loss", f"${metrics['avg_loss']:,.0f}", NEG),
-        _metric_card("Max Consec. Loss", f"{metrics['max_consecutive_losses']}", NEG,
-                     "worst losing streak"),
-        _metric_card("Profit Factor", pf_str, POS if (pf or 0) >= 1 else NEG,
-                     "gross win / loss"),
-        _metric_card("Sharpe (approx)", f"{sharpe:.2f}", POS if sharpe >= 0 else NEG,
-                     "risk-adj. return"),
-        _metric_card("Total Trades", f"{metrics['total_trades']}", TEXT, "closed"),
-        _metric_card("Risk / Trade", f"{RISK_PER_TRADE_PCT * 100:.0f}%", WARN,
-                     "target sizing"),
-    ]
-    return html.Div(children=[
-        html.Div("Live Risk", className="metric-section"),
-        html.Div(className="metric-grid", children=live_tiles),
-        html.Div("Performance", className="metric-section"),
-        html.Div(className="metric-grid", children=perf_tiles),
-    ])
-
-
-# ── Banners (circuit breakers) ────────────────────────────────────────────────
-
-def _margin_banner(state: dict) -> tuple:
-    """(children, style) for the margin-call banner. Hidden unless tripped."""
-    hidden = dict(display="none")
-    if not state.get("margin_call"):
-        return "", hidden
-    msg = (f"MARGIN CALL · PORTFOLIO BREACHED ${MARGIN_CALL_FLOOR:,.0f} FLOOR · "
-           f"ALL POSITIONS LIQUIDATED · TRADING HALTED")
-    return msg, dict(display="block")
-
-
-def _anomaly_banner(ml: "MLResults | None") -> tuple:
-    """(children, style) for the anomaly-alert banner. Hidden unless tripped."""
-    hidden = dict(display="none")
-    if ml is None or not ml.anomaly.ready or not ml.anomaly.today_anomalous:
-        return "", hidden
-    msg = ("ANOMALY ALERT · TODAY'S CANDLE IS A STATISTICAL OUTLIER · "
-           "ISOLATION-FOREST CIRCUIT BREAKER ACTIVE · BUY SIGNALS DOWNGRADED TO CAUTION")
-    return msg, dict(display="block")
-
-
-# ── Panel: ML Intel ───────────────────────────────────────────────────────────
-
-def _confidence_gauge(conf: float, strength: str) -> go.Figure:
-    """Clean arc gauge for the Random Forest live signal confidence (0–100%)."""
-    num_color = POS if strength == "STRONG" else WARN
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=conf,
-        number=dict(suffix="%", font=dict(color=num_color, size=30)),
-        gauge=dict(
-            shape="angular",
-            axis=dict(range=[0, 100], tickcolor=TEXT3,
-                      tickfont=dict(color=TEXT3, size=8)),
-            bar=dict(color=num_color, thickness=0.30),
-            bgcolor=_rgba(ACCENT, 0.03),
-            borderwidth=0,
-            steps=[
-                dict(range=[0, RF_WEAK_THRESHOLD * 100], color=_rgba(ACCENT, 0.03)),
-                dict(range=[RF_WEAK_THRESHOLD * 100, 100], color=_rgba(ACCENT, 0.06)),
-            ],
-            threshold=dict(line=dict(color=TEXT2, width=1),
-                           thickness=0.85, value=RF_WEAK_THRESHOLD * 100),
-        ),
+def fig_weights_heatmap(R: dict) -> go.Figure:
+    w = R["base_weights"].resample("W").last().dropna(how="all")
+    fig = go.Figure(go.Heatmap(
+        z=w.T.values, x=w.index, y=[a.replace("-USD", "") for a in w.columns],
+        colorscale=[[0, NEG], [0.5, "#111111"], [1, POS]], zmid=0,
+        colorbar=dict(title="w", tickfont=dict(color=TEXT2, size=9)),
     ))
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=18, r=18, t=10, b=0), height=150,
-        font=dict(color=TEXT, family="'Inter','system-ui',sans-serif"),
-    )
+    fig.update_layout(**_base_layout(margin=dict(l=70, r=20, t=20, b=30)))
     return fig
 
 
-def _ml_card(title: str, subtitle: str, body: list) -> html.Div:
-    return html.Div(className="mlcard", children=[
-        html.Div(title, className="title"),
-        html.Div(subtitle, className="subtitle"),
-        html.Div(body),
-    ])
+def fig_cost_sweep(R: dict) -> go.Figure:
+    cs = R["cost_sweep"]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=cs.index, y=cs["baseline_sharpe"], mode="lines+markers",
+                             name="baseline", line=dict(color=TEXT, width=2)))
+    fig.add_trace(go.Scatter(x=cs.index, y=cs["overlaid_sharpe"], mode="lines+markers",
+                             name="+regime+meta", line=dict(color=WARN, width=2)))
+    fig.add_hline(y=0, line=dict(color=BORDER, width=1))
+    fig.update_layout(**_base_layout(
+        xaxis=dict(title="cost multiplier (× base)"),
+        yaxis=dict(title="annualized Sharpe")))
+    return fig
 
 
-def _ml_panel(ml: "MLResults | None") -> html.Div:
-    """Three equal cards (LSTM / RF / Anomaly) + a not-financial-advice label."""
-    if ml is None:
-        return html.Div("ML engine unavailable.",
-                        style=dict(color=TEXT2, padding="8px"))
+# ── Stat helpers ──────────────────────────────────────────────────────────────
 
-    # Card A — LSTM Price Forecast.
-    lstm = ml.lstm
-    if lstm.ready:
-        dir_color = {"UP": POS, "DOWN": NEG}.get(lstm.direction, TEXT2)
-        arrow = {"UP": "↑", "DOWN": "↓", "FLAT": "→"}.get(lstm.direction, "")
-        lstm_body = [
-            html.Div([
-                html.Span(f"{arrow} {lstm.direction}",
-                          style=dict(color=dir_color, fontWeight="600", fontSize="24px")),
-                html.Span(f"  {lstm.pct_change:+.1f}% / {LSTM_HORIZON_DAYS}d",
-                          style=dict(color=dir_color, fontSize="13px")),
-            ]),
-            html.Div(f"{LSTM_HORIZON_DAYS}-day target  ${lstm.target_price:,.0f}",
-                     style=dict(color=TEXT, fontSize="13px", marginTop="10px")),
-            html.Div("± confidence band shown on the price chart",
-                     style=dict(color=TEXT2, fontSize="11px", marginTop="6px")),
-        ]
-        if lstm.training:
-            lstm_body.append(html.Div("LSTM training… (showing previous forecast)",
-                                      style=dict(color=WARN, fontSize="11px",
-                                                 marginTop="10px")))
-    elif lstm.training:
-        lstm_body = [html.Div("LSTM training…", style=dict(color=WARN, fontSize="13px")),
-                     html.Div("First model fit in progress.",
-                              style=dict(color=TEXT2, fontSize="11px", marginTop="6px"))]
-    else:
-        lstm_body = [html.Div(lstm.status, style=dict(color=TEXT2, fontSize="12px"))]
-    card_a = _ml_card("LSTM Price Forecast",
-                      f"2-layer LSTM · 60→{LSTM_HORIZON_DAYS}d · model output, not advice",
-                      lstm_body)
-
-    # Card B — Random Forest Signal Confidence.
-    rf = ml.rf
-    if rf.ready and rf.current_confidence is not None:
-        rf_body = [
-            dcc.Graph(figure=_confidence_gauge(rf.current_confidence, rf.current_strength),
-                      config=dict(displayModeBar=False), style=dict(height="150px")),
-            html.Div(f"{rf.current_strength} · {rf.current_signal or '—'} signal",
-                     style=dict(color=POS if rf.current_strength == "STRONG" else WARN,
-                                fontSize="12px", fontWeight="600", textAlign="center")),
-            html.Div(f"trained on {rf.n_trades} realised trades",
-                     style=dict(color=TEXT2, fontSize="11px", textAlign="center",
-                                marginTop="4px")),
-        ]
-    else:
-        rf_body = [html.Div(rf.status, style=dict(color=TEXT2, fontSize="12px",
-                                                  padding="28px 0", textAlign="center"))]
-    card_b = _ml_card("Signal Confidence",
-                      "Random Forest on realised trades · not advice", rf_body)
-
-    # Card C — Isolation Forest Anomaly Detection.
-    anom = ml.anomaly
-    if anom.ready:
-        status_txt, status_color = (("ANOMALOUS", NEG) if anom.today_anomalous
-                                    else ("NORMAL", POS))
-        anom_body = [
-            html.Div(status_txt, style=dict(color=status_color, fontWeight="600",
-                                            fontSize="24px")),
-            html.Div("today's candle", style=dict(color=TEXT2, fontSize="11px",
-                                                  marginBottom="10px")),
-            html.Div(f"{anom.recent_count} anomalies in last {ANOMALY_WINDOW_DAYS}d",
-                     style=dict(color=TEXT, fontSize="13px")),
-            html.Div("acts as a BUY → CAUTION circuit breaker",
-                     style=dict(color=TEXT2, fontSize="11px", marginTop="6px")),
-        ]
-    else:
-        anom_body = [html.Div(anom.status, style=dict(color=TEXT2, fontSize="12px"))]
-    card_c = _ml_card("Anomaly Detection",
-                      "Isolation Forest · circuit breaker · not advice", anom_body)
-
-    return html.Div(children=[
-        html.Div(className="ml-grid", children=[card_a, card_b, card_c]),
-        html.Div("Model outputs — not financial advice", className="ml-disclaimer"),
-    ])
-
-
-# ── Panel: Overview ───────────────────────────────────────────────────────────
-
-def _overview_stat(label: str, value: str, color: str = TEXT, sub: str = "") -> html.Div:
+def _stat(label, value, color=TEXT, sub=""):
     return html.Div(className="statcard", children=[
         html.Div(label, className="lbl"),
         html.Div(value, className="val tnum", style=dict(color=color)),
@@ -677,394 +200,278 @@ def _overview_stat(label: str, value: str, color: str = TEXT, sub: str = "") -> 
     ])
 
 
-def _overview_panel(df: pd.DataFrame, live_price, latest_portfolio: float,
-                    ret: float, mdd: float, ml: "MLResults | None") -> html.Div:
-    """4 stat cards + a 2-column grid: last signal (left) / ML status (right)."""
-    price_str = f"${live_price:,.0f}" if live_price else "—"
-
-    stats = html.Div(className="stat-row", children=[
-        _overview_stat("Live Price", price_str, TEXT),
-        _overview_stat("Portfolio Value", f"${latest_portfolio:,.0f}", TEXT),
-        _overview_stat("Total Return", f"{ret:+.1f}%", POS if ret >= 0 else NEG),
-        _overview_stat("Max Drawdown", f"{mdd:.1f}%", NEG),
-    ])
-
-    # Last signal card.
-    sig_rows = df[df["Signal"].notna()]
-    if not sig_rows.empty:
-        last_d = sig_rows.index[-1]
-        last_sig = sig_rows["Signal"].iloc[-1]
-        sig_color = POS if last_sig == "BUY" else NEG
-        strength_kv = None
-        if ml is not None and ml.rf.ready and last_d in ml.rf.signal_confidences:
-            info = ml.rf.signal_confidences[last_d]
-            strength_kv = html.Div(className="kv", children=[
-                html.Span("Strength", className="k"),
-                html.Span(f"{info['strength']} · {info['confidence']:.0f}%",
-                          className="v",
-                          style=dict(color=POS if info["strength"] == "STRONG" else WARN)),
-            ])
-        last_signal_card = html.Div(className="card", style=dict(padding="20px"), children=[
-            html.Div("Last Signal", className="panel-title"),
-            html.Div(className="kv", children=[
-                html.Span("Type", className="k"),
-                html.Span(last_sig, className="v", style=dict(color=sig_color)),
-            ]),
-            html.Div(className="kv", children=[
-                html.Span("Date", className="k"),
-                html.Span(last_d.strftime("%Y-%m-%d"), className="v"),
-            ]),
-            html.Div(className="kv", children=[
-                html.Span("Price", className="k"),
-                html.Span(f"${df.loc[last_d, 'Close']:,.0f}", className="v"),
-            ]),
-            strength_kv,
-        ])
-    else:
-        last_signal_card = html.Div(className="card", style=dict(padding="20px"), children=[
-            html.Div("Last Signal", className="panel-title"),
-            html.Div("No crossover signals yet.", style=dict(color=TEXT2)),
-        ])
-
-    # ML status card.
-    if ml is None:
-        ml_rows = [html.Div("ML engine unavailable.", style=dict(color=TEXT2))]
-    else:
-        lstm_v = (f"{ml.lstm.direction} {ml.lstm.pct_change:+.1f}%"
-                  if ml.lstm.ready else ml.lstm.status)
-        rf_v = (f"{ml.rf.current_strength} · {ml.rf.current_confidence:.0f}%"
-                if ml.rf.ready and ml.rf.current_confidence is not None else ml.rf.status)
-        anom_v = (("ANOMALOUS" if ml.anomaly.today_anomalous else "NORMAL")
-                  if ml.anomaly.ready else ml.anomaly.status)
-        ml_rows = [
-            html.Div(className="kv", children=[
-                html.Span("LSTM Forecast", className="k"),
-                html.Span(lstm_v, className="v")]),
-            html.Div(className="kv", children=[
-                html.Span("Signal Confidence", className="k"),
-                html.Span(rf_v, className="v")]),
-            html.Div(className="kv", children=[
-                html.Span("Anomaly Status", className="k"),
-                html.Span(anom_v, className="v",
-                          style=dict(color=NEG if (ml.anomaly.ready and
-                                     ml.anomaly.today_anomalous) else TEXT))]),
-        ]
-    ml_status_card = html.Div(className="card", style=dict(padding="20px"), children=[
-        html.Div("ML Status", className="panel-title"), *ml_rows,
-    ])
-
+def overview_panel(R: dict) -> html.Div:
+    m = R["metrics"]
+    base, ew, btc = m["baseline"], m["[bench] equal_weight"], m["[bench] btc_hold"]
+    verdict = (
+        "Across 2019–2026, the cross-sectional long/short crossover book is NOT "
+        "competitive with buy-and-hold on a risk-adjusted basis, and the ML "
+        "overlays add no out-of-sample lift (see ML Intel). This is the honest, "
+        "rigorously-validated finding — the value here is the methodology, not a "
+        "manufactured edge."
+    )
     return html.Div(children=[
-        stats,
-        html.Div(className="two-col", children=[last_signal_card, ml_status_card]),
-    ])
-
-
-# ── Header builder ────────────────────────────────────────────────────────────
-
-def _hdr_stat(label: str, value: str, color: str = TEXT) -> html.Div:
-    return html.Div(className="hdr-stat", children=[
-        html.Div(label, className="lbl"),
-        html.Div(value, className="val tnum", style=dict(color=color)),
-    ])
-
-
-def _build_header(live_price, signal: str, badge_text: str, badge_class: str,
-                  latest_portfolio: float, ret: float, mdd: float) -> html.Div:
-    """Center: BTC/USD live price. Right: signal pill + inline stats."""
-    price_display = f"${live_price:,.0f}" if live_price else "—"
-    return html.Div(children=[
-        html.Div(className="hdr-spacer"),
-        html.Div(className="hdr-center", children=[
-            html.Span("BTC/USD", className="hdr-pair-label"),
-            html.Span(price_display, className="hdr-price tnum"),
+        html.Div("Overview", className="panel-title"),
+        html.Div(className="stat-row", children=[
+            _stat("Strategy Sharpe", f"{base['sharpe']:.2f}",
+                  POS if base['sharpe'] > 0 else NEG, "net of 1× costs"),
+            _stat("Strategy Ann. Return", f"{base['ann_return']*100:+.1f}%",
+                  POS if base['ann_return'] > 0 else NEG),
+            _stat("BTC HODL Sharpe", f"{btc['sharpe']:.2f}", TEXT, "benchmark"),
+            _stat("Equal-Weight Sharpe", f"{ew['sharpe']:.2f}", TEXT, "benchmark"),
         ]),
-        html.Div(className="hdr-stats", children=[
-            html.Span(badge_text, className=f"pill {badge_class}"),
-            _hdr_stat("Portfolio", f"${latest_portfolio:,.0f}", TEXT),
-            _hdr_stat("Total Return", f"{ret:+.1f}%", POS if ret >= 0 else NEG),
-            _hdr_stat("Max Drawdown", f"{mdd:.1f}%", NEG),
+        html.Div(className="card", style=dict(padding="20px", marginTop="4px"), children=[
+            html.Div("Verdict", className="panel-title"),
+            html.Div(verdict, style=dict(color=TEXT2, fontSize="13px", lineHeight="1.6")),
+        ]),
+        html.Div(className="card", style=dict(padding="20px", marginTop="16px"), children=[
+            html.Div("Variants — out-of-sample, net of 1× costs", className="panel-title"),
+            _metrics_table(R),
         ]),
     ])
 
 
-# ── Dash application ──────────────────────────────────────────────────────────
-
-app = dash.Dash(
-    __name__,
-    title="Meridian · BTC Dashboard",
-    update_title=None,
-    external_scripts=[
-        {"src": "https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"},
-    ],
-)
-server = app.server
-
-
-def _nav_item(panel: str, icon: str, label: str, active: bool = False) -> html.Div:
-    """One sidebar navigation row: a Lucide icon + label, tagged with data-panel."""
-    cls = "nav-item active" if active else "nav-item"
-    return html.Div(
-        className=cls,
-        **{"data-panel": panel},
-        children=[
-            html.I(**{"data-lucide": icon}),
-            html.Span(label),
+def _metrics_table(R: dict) -> dash_table.DataTable:
+    rows = []
+    for name, s in R["metrics"].items():
+        rows.append({
+            "variant": name,
+            "ann_return": f"{s['ann_return']*100:+.1f}%",
+            "ann_vol": f"{s['ann_vol']*100:.1f}%",
+            "sharpe": f"{s['sharpe']:.2f}",
+            "max_dd": f"{s['max_drawdown']*100:.1f}%",
+            "dsr": f"{s.get('deflated_sharpe', float('nan')):.2f}",
+        })
+    return dash_table.DataTable(
+        data=rows,
+        columns=[{"name": c, "id": c} for c in
+                 ["variant", "ann_return", "ann_vol", "sharpe", "max_dd", "dsr"]],
+        style_as_list_view=True,
+        style_header=dict(backgroundColor="transparent", color=TEXT2, fontWeight="600",
+                          fontSize="11px", textTransform="uppercase", border="none",
+                          borderBottom=f"1px solid {BORDER}", padding="10px 12px"),
+        style_cell=dict(backgroundColor="transparent", color=TEXT, border="none",
+                        fontFamily="'Inter',system-ui,sans-serif", fontSize="12px",
+                        padding="8px 12px", textAlign="right"),
+        style_cell_conditional=[{"if": {"column_id": "variant"}, "textAlign": "left"}],
+        style_data_conditional=[
+            {"if": {"filter_query": '{variant} contains "bench"'},
+             "color": TEXT2, "fontStyle": "italic"},
         ],
     )
 
 
-def _panel(panel: str, extra_class: str, children, active: bool = False) -> html.Div:
-    """A content panel; only the active one is displayed (see meridian.js)."""
-    cls = f"panel {extra_class}" + (" active" if active else "")
-    return html.Div(className=cls, **{"data-panel": panel}, children=children)
+def signals_panel(R: dict) -> html.Div:
+    ts, direction = R["trend"], R["direction"]
+    last_ts, last_dir = ts.iloc[-1], direction.iloc[-1]
+    rows = []
+    for a in R["panel"].assets:
+        st = last_ts.get(a, np.nan)
+        di = last_dir.get(a, 0.0)
+        rows.append({
+            "asset": a.replace("-USD", ""),
+            "trend": "up" if st > 0 else ("down" if st < 0 else "—"),
+            "position": "LONG" if di > 0 else ("SHORT" if di < 0 else "flat"),
+        })
+    return html.Div(children=[
+        html.Div("Signals — latest state", className="panel-title"),
+        dash_table.DataTable(
+            data=rows, columns=[{"name": c, "id": c} for c in ["asset", "trend", "position"]],
+            style_as_list_view=True,
+            style_header=dict(backgroundColor="transparent", color=TEXT2, fontWeight="600",
+                              fontSize="11px", textTransform="uppercase", border="none",
+                              borderBottom=f"1px solid {BORDER}", padding="10px 12px"),
+            style_cell=dict(backgroundColor="transparent", color=TEXT, border="none",
+                            fontSize="13px", padding="9px 12px", textAlign="left",
+                            fontFamily="'Inter',system-ui,sans-serif"),
+            style_data_conditional=[
+                {"if": {"filter_query": '{position} = "LONG"', "column_id": "position"}, "color": POS},
+                {"if": {"filter_query": '{position} = "SHORT"', "column_id": "position"}, "color": NEG},
+            ],
+        ),
+    ])
 
 
-def _chart_panel(panel: str, graph_id: str, active: bool = False) -> html.Div:
-    """A full-bleed chart panel."""
+def ml_panel(R: dict) -> html.Div:
+    ml = R["ml_summary"]
+    meta = R.get("meta_res")
+    regime = R.get("regime")
+    # Meta card
+    if meta is not None:
+        auc = meta.oos_auc
+        meta_body = [
+            html.Div(f"AUC {auc:.2f}", style=dict(color=POS if auc > 0.55 else NEG,
+                     fontWeight="600", fontSize="24px")),
+            html.Div(f"{meta.n_events} events · base rate {meta.base_rate*100:.0f}%",
+                     style=dict(color=TEXT2, fontSize="11px", marginTop="8px")),
+            html.Div("OOS via purged k-fold. AUC ≤ 0.5 ⇒ no usable edge.",
+                     style=dict(color=TEXT2, fontSize="11px", marginTop="6px")),
+        ]
+    else:
+        meta_body = [html.Div("unavailable", style=dict(color=TEXT2))]
+    # Regime card
+    if regime is not None:
+        frac = float((regime < 1.0).mean())
+        regime_body = [
+            html.Div(f"{frac*100:.1f}%", style=dict(color=WARN, fontWeight="600", fontSize="24px")),
+            html.Div("of days flagged abnormal", style=dict(color=TEXT2, fontSize="11px", marginTop="8px")),
+            html.Div("Walk-forward IsolationForest; gating hurt OOS P&L here.",
+                     style=dict(color=TEXT2, fontSize="11px", marginTop="6px")),
+        ]
+    else:
+        regime_body = [html.Div("unavailable", style=dict(color=TEXT2))]
+    # LSTM card (from pipeline summary.json)
+    lstm = ml.get("lstm") if ml else None
+    if lstm:
+        beats = lstm["beats_baseline"]
+        lstm_body = [
+            html.Div("beats RW" if beats else "no skill",
+                     style=dict(color=POS if beats else NEG, fontWeight="600", fontSize="24px")),
+            html.Div(f"RMSE {lstm['oos_rmse']:.4f} vs RW {lstm['baseline_rmse']:.4f}",
+                     style=dict(color=TEXT2, fontSize="11px", marginTop="8px")),
+            html.Div(f"dir acc {lstm['oos_dir_acc']*100:.0f}% vs {lstm['baseline_dir_acc']*100:.0f}%",
+                     style=dict(color=TEXT2, fontSize="11px", marginTop="4px")),
+        ]
+    else:
+        lstm_body = [html.Div("run pipeline", style=dict(color=TEXT2, fontSize="13px")),
+                     html.Div("python -m meridian.pipeline", style=dict(color=TEXT3, fontSize="11px", marginTop="6px"))]
+
+    def card(title, sub, body):
+        return html.Div(className="mlcard", children=[
+            html.Div(title, className="title"), html.Div(sub, className="subtitle"), html.Div(body)])
+
+    return html.Div(children=[
+        html.Div("ML Intel — honest out-of-sample diagnostics", className="panel-title"),
+        html.Div(className="ml-grid", children=[
+            card("RF Meta-Label", "take/skip a signal · purged CV", meta_body),
+            card("Regime Filter", "IsolationForest · walk-forward", regime_body),
+            card("LSTM Forecast", "log-returns vs random walk", lstm_body),
+        ]),
+        html.Div("Per the pre-committed rule, a model must prove OOS P&L lift or be "
+                 "shelved. None clears the bar — reported honestly. Model outputs, "
+                 "not financial advice.", className="ml-disclaimer"),
+    ])
+
+
+# ── App ───────────────────────────────────────────────────────────────────────
+
+app = dash.Dash(__name__, title="Meridian · Research", update_title=None,
+                external_scripts=[{"src": "https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"}])
+server = app.server
+
+
+def _nav(panel, icon, label, active=False):
+    return html.Div(className="nav-item active" if active else "nav-item",
+                    **{"data-panel": panel},
+                    children=[html.I(**{"data-lucide": icon}), html.Span(label)])
+
+
+def _panel(panel, extra, children, active=False):
+    return html.Div(className=f"panel {extra}" + (" active" if active else ""),
+                    **{"data-panel": panel}, children=children)
+
+
+def _chart_panel(panel, gid, active=False):
     return _panel(panel, "", html.Div(className="chart-fill", children=[
-        dcc.Graph(id=graph_id, className="chart-fill",
-                  style=dict(height="100%", width="100%"),
-                  config=_GRAPH_CONFIG),
-    ]), active=active)
+        dcc.Graph(id=gid, className="chart-fill", style=dict(height="100%", width="100%"),
+                  config=_GRAPH_CFG)]), active=active)
 
 
 app.layout = html.Div(className="app", children=[
-
-    # ── Header (always visible, full width) ───────────────────────────────────
     html.Div(className="header", children=[
-        html.Div(className="hdr-left", children=[
-            html.Div("MERIDIAN", className="wordmark"),
-        ]),
+        html.Div(className="hdr-left", children=[html.Div("MERIDIAN", className="wordmark")]),
         html.Div(id="header-stats", className="hdr-right"),
     ]),
-
-    # ── Circuit-breaker banners (hidden until tripped) ────────────────────────
-    html.Div(id="margin-banner", className="banner banner-neg",
-             style=dict(display="none")),
-    html.Div(id="anomaly-banner", className="banner banner-warn",
-             style=dict(display="none")),
-
-    # ── Body: sidebar + main content ──────────────────────────────────────────
     html.Div(className="body-row", children=[
-
-        # Sidebar (fixed, never scrolls). The wordmark lives only in the header.
         html.Div(className="sidebar", children=[
             html.Div(className="nav", children=[
-                _nav_item("price",    "activity",          "Price & SMAs", active=True),
-                _nav_item("signals",  "bar-chart-2",       "Signals"),
-                _nav_item("drawdown", "trending-down",     "Drawdown"),
-                _nav_item("equity",   "dollar-sign",       "Equity"),
-                _nav_item("trades",   "clipboard-list",    "Trade Log"),
-                _nav_item("ml",       "brain",             "ML Intel"),
-                _nav_item("overview", "layout-dashboard",  "Overview"),
+                _nav("overview", "layout-dashboard", "Overview", active=True),
+                _nav("equity", "trending-up", "Equity"),
+                _nav("positions", "scale", "Positions"),
+                _nav("signals", "activity", "Signals"),
+                _nav("costs", "dollar-sign", "Costs"),
+                _nav("ml", "brain", "ML Intel"),
             ]),
-            html.Div(APP_VERSION, className="sidebar-footer"),
+            html.Div("v2.0 · research", className="sidebar-footer"),
         ]),
-
-        # Main content — every panel in the DOM; one shown at a time.
         html.Div(className="main", children=[
-
-            _chart_panel("price", "price-chart", active=True),
-            _chart_panel("signals", "signal-chart"),
-            _chart_panel("drawdown", "drawdown-chart"),
-            _chart_panel("equity", "equity-chart"),
-
-            # Trade Log — table (60%) + risk metrics (40%).
-            _panel("trades", "split", [
-                html.Div(className="col-trades", children=[
-                    html.Div("Trade Log", className="panel-title"),
-                    dash_table.DataTable(
-                        id="trade-log",
-                        columns=TRADE_LOG_COLUMNS,
-                        data=[],
-                        hidden_columns=["pnl_num"],
-                        page_action="none",
-                        sort_action="native",
-                        style_as_list_view=True,
-                        style_table=dict(overflowX="auto"),
-                        style_header=dict(
-                            backgroundColor="transparent", color=TEXT2,
-                            fontWeight="600", fontSize="11px",
-                            letterSpacing="0.08em", border="none",
-                            borderBottom=f"1px solid {BORDER}",
-                            textTransform="uppercase",
-                            fontFamily="'Inter',system-ui,sans-serif",
-                            padding="10px 12px",
-                        ),
-                        style_cell=dict(
-                            backgroundColor="transparent", color=TEXT,
-                            fontFamily="'Inter',system-ui,sans-serif",
-                            fontSize="12px", border="none",
-                            padding="9px 12px", textAlign="right",
-                            whiteSpace="nowrap",
-                        ),
-                        style_cell_conditional=[
-                            {"if": {"column_id": c}, "textAlign": "left"}
-                            for c in ("entry_date", "exit_date", "reason")
-                        ],
-                        style_data=dict(borderBottom=f"1px solid {BORDER}"),
-                        style_data_conditional=[
-                            {"if": {"row_index": "odd"},
-                             "backgroundColor": "rgba(255,255,255,0.02)"},
-                            {"if": {"filter_query": "{pnl_num} > 0",
-                                    "column_id": "pnl_dollars"},
-                             "color": POS, "fontWeight": "600"},
-                            {"if": {"filter_query": "{pnl_num} > 0",
-                                    "column_id": "pnl_pct"},
-                             "color": POS, "fontWeight": "600"},
-                            {"if": {"filter_query": "{pnl_num} > 0",
-                                    "column_id": "entry_date"},
-                             "borderLeft": f"2px solid {POS}"},
-                            {"if": {"filter_query": "{pnl_num} < 0",
-                                    "column_id": "pnl_dollars"},
-                             "color": NEG, "fontWeight": "600"},
-                            {"if": {"filter_query": "{pnl_num} < 0",
-                                    "column_id": "pnl_pct"},
-                             "color": NEG, "fontWeight": "600"},
-                            {"if": {"filter_query": "{pnl_num} < 0",
-                                    "column_id": "entry_date"},
-                             "borderLeft": f"2px solid {NEG}"},
-                            {"if": {"filter_query": '{reason} = "OPEN"'},
-                             "backgroundColor": "rgba(255,255,255,0.03)"},
-                            {"if": {"filter_query": '{reason} contains "Stop"',
-                                    "column_id": "reason"}, "color": WARN},
-                            {"if": {"filter_query": '{reason} = "Margin Call"',
-                                    "column_id": "reason"},
-                             "color": NEG, "fontWeight": "600"},
-                        ],
-                    ),
-                ]),
-                html.Div(className="col-risk", children=[
-                    html.Div("Risk Metrics", className="panel-title"),
-                    html.Div(id="risk-metrics"),
-                ]),
+            _panel("overview", "scroll pad", [html.Div(id="overview-content")], active=True),
+            _panel("equity", "", [html.Div(className="chart-fill", children=[
+                dcc.Graph(id="equity-chart", className="chart-fill",
+                          style=dict(height="100%"), config=_GRAPH_CFG)])]),
+            _panel("positions", "scroll pad", [
+                html.Div("Positions — current target weights", className="panel-title"),
+                dcc.Graph(id="weights-bar", config=_GRAPH_CFG, style=dict(height="320px")),
+                html.Div("Weight history (weekly)", className="panel-title", style=dict(marginTop="20px")),
+                dcc.Graph(id="weights-heatmap", config=_GRAPH_CFG, style=dict(height="320px")),
             ]),
-
-            # ML Intel.
-            _panel("ml", "scroll pad", [
-                html.Div("ML Intel", className="panel-title"),
-                html.Div(id="ml-panel"),
+            _panel("signals", "scroll pad", [html.Div(id="signals-content")]),
+            _panel("costs", "scroll pad", [
+                html.Div("Cost robustness — Sharpe vs cost multiplier", className="panel-title"),
+                dcc.Graph(id="cost-chart", config=_GRAPH_CFG, style=dict(height="420px")),
+                html.Div("Even at zero cost the edge is marginal; it does not survive "
+                         "realistic friction.", className="ml-disclaimer"),
             ]),
-
-            # Overview.
-            _panel("overview", "scroll pad", [
-                html.Div("Overview", className="panel-title"),
-                html.Div(id="overview-content"),
-            ]),
+            _panel("ml", "scroll pad", [html.Div(id="ml-content")]),
         ]),
     ]),
-
-    # ── Footer ────────────────────────────────────────────────────────────────
     html.Div(id="footer", className="footer"),
-
-    # ── Hidden loading sentinel (drives dcc.Loading on first fetch) ───────────
     dcc.Loading(id="page-loading", type="circle", color=ACCENT,
                 children=html.Div(id="loading-trigger", style=dict(display="none"))),
-
     dcc.Interval(id="refresh-interval", interval=REFRESH_MS, n_intervals=0),
 ])
 
 
-# ── Single data callback (fires on load and every 30s) ────────────────────────
-
 @app.callback(
-    Output("price-chart",     "figure"),
-    Output("signal-chart",    "figure"),
-    Output("drawdown-chart",  "figure"),
-    Output("equity-chart",    "figure"),
-    Output("trade-log",       "data"),
-    Output("risk-metrics",    "children"),
-    Output("margin-banner",   "children"),
-    Output("margin-banner",   "style"),
-    Output("anomaly-banner",  "children"),
-    Output("anomaly-banner",  "style"),
-    Output("ml-panel",        "children"),
-    Output("overview-content","children"),
-    Output("header-stats",    "children"),
-    Output("footer",          "children"),
+    Output("overview-content", "children"),
+    Output("equity-chart", "figure"),
+    Output("weights-bar", "figure"),
+    Output("weights-heatmap", "figure"),
+    Output("signals-content", "children"),
+    Output("cost-chart", "figure"),
+    Output("ml-content", "children"),
+    Output("header-stats", "children"),
+    Output("footer", "children"),
     Output("loading-trigger", "children"),
     Input("refresh-interval", "n_intervals"),
 )
-def refresh_dashboard(n_intervals: int):
-    """
-    Master callback: fires on page load (n=0) and every 30 seconds thereafter.
-    Fetches fresh data, runs the indicator pipeline AND the risk-managed
-    backtest, then returns every panel in one round-trip.
-    """
-    loading_msg = "Fetching data…" if n_intervals == 0 else ""
-
+def refresh(n):
+    loading = "Computing research…" if n == 0 else ""
     try:
-        # ── Data → indicators → ATR → risk-managed backtest ──────────────────
-        df_raw, live_price = get_full_dataset()
-        df = process(df_raw)                          # SMAs + crossover signals
-        df = add_atr(df)                              # 14-period ATR on real OHLC
-        df, trades, metrics, state = run_backtest(df) # sizing, stops, P&L
+        R = get_results()
+        live = fetch_live_prices(_CFG)  # display only
+        btc = live.get("BTC-USD")
+        base = R["metrics"]["baseline"]
 
-        # ── ML intelligence layer (Models A/B/C) ─────────────────────────────
-        signal = current_signal(df)
-        ml = None
-        if ML_IMPORT_OK:
-            try:
-                ml = ml_engine.update(df, trades, signal)
-            except Exception:
-                traceback.print_exc()
-                ml = None
+        header = html.Div(children=[
+            html.Div(className="hdr-spacer"),
+            html.Div(className="hdr-center", children=[
+                html.Span("BTC/USD", className="hdr-pair-label"),
+                html.Span(f"${btc:,.0f}" if btc else "—", className="hdr-price tnum"),
+            ]),
+            html.Div(className="hdr-stats", children=[
+                html.Span("LONG/SHORT", className="pill pill-neutral"),
+                html.Div(className="hdr-stat", children=[
+                    html.Span("Strategy Sharpe", className="lbl"),
+                    html.Span(f"{base['sharpe']:.2f}", className="val tnum",
+                              style=dict(color=POS if base['sharpe'] > 0 else NEG))]),
+                html.Div(className="hdr-stat", children=[
+                    html.Span("BTC HODL Sharpe", className="lbl"),
+                    html.Span(f"{R['metrics']['[bench] btc_hold']['sharpe']:.2f}",
+                              className="val tnum")]),
+            ]),
+        ])
 
-        # ── Charts ───────────────────────────────────────────────────────────
-        price_fig    = _price_chart(df, ml)
-        signal_fig   = _signal_chart(df, ml)
-        drawdown_fig = _drawdown_chart(df)
-        equity_fig   = _equity_chart(df, trades)
+        footer = (f"MERIDIAN · data through {R['last_date'].date()} · "
+                  f"{len(R['panel'].assets)} assets · long/short vol-targeted · "
+                  f"net of costs · live price display-only (no repainting)")
 
-        # ── Panels ─────────────────────────────────────────────────────────--
-        trade_data   = _trade_log_data(trades)
-        risk_panel   = _risk_metrics_panel(metrics, state)
-        banner_msg, banner_style = _margin_banner(state)
-        anom_msg, anom_style = _anomaly_banner(ml)
-        ml_panel     = _ml_panel(ml)
-
-        # ── Header figures ─────────────────────────────────────────────────--
-        mdd = max_drawdown(df)
-        ret = total_return(df)
-        latest_portfolio = (
-            df["Portfolio"].dropna().iloc[-1]
-            if not df["Portfolio"].isna().all() else 100_000
-        )
-
-        # Circuit breaker: an anomalous candle downgrades a live BUY to CAUTION.
-        anomaly_today = bool(ml and ml.anomaly.ready and ml.anomaly.today_anomalous)
-        if state["halted"]:
-            badge_text, badge_class = "HALTED", "pill-sell"
-        elif anomaly_today and signal == "BUY":
-            badge_text, badge_class = "CAUTION", "pill-warn"
-        else:
-            badge_text = signal
-            badge_class = {"BUY": "pill-buy", "SELL": "pill-sell"}.get(signal, "pill-neutral")
-
-        header = _build_header(live_price, signal, badge_text, badge_class,
-                               latest_portfolio, ret, mdd)
-        overview = _overview_panel(df, live_price, latest_portfolio, ret, mdd, ml)
-
-        # ── Footer ───────────────────────────────────────────────────────────
-        buy_count  = int((df["Signal"] == "BUY").sum())
-        sell_count = int((df["Signal"] == "SELL").sum())
-        last_date  = df.index[-1].strftime("%Y-%m-%d") if not df.empty else "—"
-        footer = (
-            f"MERIDIAN · data through {last_date} · "
-            f"{buy_count} golden crosses · {sell_count} death crosses · "
-            f"{metrics['total_trades']} closed trades · live refresh every 30s"
-        )
-
-        return (price_fig, signal_fig, drawdown_fig, equity_fig,
-                trade_data, risk_panel, banner_msg, banner_style,
-                anom_msg, anom_style, ml_panel, overview,
-                header, footer, loading_msg)
-
+        return (overview_panel(R), fig_equity(R), fig_weights_bar(R),
+                fig_weights_heatmap(R), signals_panel(R), fig_cost_sweep(R),
+                ml_panel(R), header, footer, loading)
     except Exception:
         traceback.print_exc()
-        empty  = _empty_figure("Data unavailable — retrying in 30s…")
-        hidden = dict(display="none")
-        err    = html.Div("Data error — retrying…", style=dict(color=NEG))
-        return (empty, empty, empty, empty,
-                [], "", "", hidden, "", hidden, "", "",
-                err, "", loading_msg)
+        empty = go.Figure().update_layout(paper_bgcolor=BG, plot_bgcolor=BG)
+        err = html.Div("Error computing research — see server log.", style=dict(color=NEG, padding="20px"))
+        return (err, empty, empty, empty, err, empty, err,
+                html.Div("error", className="hdr-right"), "", loading)
