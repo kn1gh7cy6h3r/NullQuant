@@ -159,7 +159,7 @@ def _stack_features(panels: dict[str, pd.DataFrame], cols: list[str],
     frames = []
     for c in cols:
         p = panels[c].reindex(index=dates, columns=assets)
-        s = p.stack(dropna=False)
+        s = p.stack(future_stack=True)
         s.name = c
         frames.append(s)
     feats = pd.concat(frames, axis=1)
@@ -250,10 +250,10 @@ def ltr_signal(panel: Panel, cfg: Config) -> LTRResult:
     if feats.empty:
         return _empty(dates, assets, "no finite feature rows (warm-up); direction=0")
 
-    # Align labels onto the feature rows. ``y_label`` is the demeaned forward
-    # return (training target); ``y_raw`` is the raw forward return (for IC).
-    y_label = y_demeaned.stack(dropna=False).reindex(feats.index)
-    y_raw = fwd.stack(dropna=False).reindex(feats.index)
+    # Align the training target (cross-sectionally demeaned forward return) onto
+    # the finite feature rows. Raw forward returns are kept wide (``fwd``) for the
+    # rank-IC diagnostic below.
+    y_label = y_demeaned.stack(future_stack=True).reindex(feats.index)
 
     # The calendar position of each row's date (for the label-realization gate)
     # and of its label-realization date (date_pos + horizon).
@@ -288,7 +288,7 @@ def ltr_signal(panel: Panel, cfg: Config) -> LTRResult:
     oos_score = np.full(n_rows, np.nan, dtype=float)
     n_refits = 0
 
-    # Precompute, for speed, a sort of rows by position is unnecessary; we mask.
+    # Walk forward across refit cutoffs; boolean masks select train/score rows.
     for ci, cutoff in enumerate(cutoffs):
         next_cutoff = cutoffs[ci + 1] if ci + 1 < len(cutoffs) else n_dates
 
@@ -362,7 +362,11 @@ def ltr_signal(panel: Panel, cfg: Config) -> LTRResult:
         ic_hit = 0.0
 
     # --- 5. build the {-1, 0, +1} direction matrix --------------------------
-    direction = pd.DataFrame(0.0, index=dates, columns=assets)
+    # Build on a NaN canvas: a row stays NaN unless this rebalance actually set
+    # positions, so the forward-fill HOLDS the last real positions across both
+    # non-rebalance days AND rebalance dates that had no usable scores. Only the
+    # genuine warm-up prefix (before the first position) ends up zeroed.
+    direction = pd.DataFrame(np.nan, index=dates, columns=assets)
     any_position = False
     for d in rebal_dates:
         row = score_panel.loc[d]
@@ -384,13 +388,8 @@ def ltr_signal(panel: Panel, cfg: Config) -> LTRResult:
             direction.loc[d, shorts] = -1.0
         any_position = True
 
-    # Hold positions between rebalances (forward-fill), zeros during warm-up.
+    # Hold positions between rebalances (forward-fill); zeros during warm-up.
     if any_position:
-        # Mark non-rebalance days as NaN first so ffill carries the last set
-        # rebalance row; then fill remaining (pre-first-rebalance) with 0.
-        rebal_set = set(rebal_dates)
-        mask_non_rebal = ~direction.index.isin(rebal_set)
-        direction.loc[mask_non_rebal, :] = np.nan
         direction = direction.ffill().fillna(0.0)
     else:
         direction = pd.DataFrame(0.0, index=dates, columns=assets)

@@ -37,7 +37,7 @@ from meridian.signals.base import target_directions, trend_state
 from meridian.portfolio.costs import CostModel
 from meridian.portfolio.backtest import run_backtest
 from meridian.metrics import performance as perf
-from meridian.ablation import build_overlays, run_cost_sweep, _exposure_product
+from meridian.ablation import compute_signals, run_cost_sweep
 
 # ── Palette (matches assets/meridian.css) ─────────────────────────────────────
 BG, SURFACE = "#0a0a0a", "#0f0f0f"
@@ -113,58 +113,47 @@ _GRAPH_CFG = dict(displayModeBar=False, scrollZoom=True, displaylogo=False,
 
 
 def compute_results() -> dict:
-    """Run the backtest variants + overlays + cost sweep once; cache the result."""
+    """Compute all signal sources + the conformal gate once, run every variant
+    backtest, and cache. The four ML models are fit ONCE here (via compute_signals)."""
     set_global_seed(_CFG.seed)
     panel = load_history(_CFG)
-    direction = target_directions(panel, _CFG)
     cost = CostModel.from_config(_CFG, multiplier=1.0)
-
-    overlays = build_overlays(panel, _CFG)
-    regime, meta = overlays.get("regime"), overlays.get("meta")
-    meta_res = overlays.get("_meta_result")
     idx = panel.close.index
 
-    variants = {
-        "baseline": None,
-        "+regime": regime,
-        "+meta": meta,
-        "+regime+meta": _exposure_product(regime, meta, index=idx),
-    }
+    directions, conf_exp, diagnostics = compute_signals(panel, _CFG)
+
+    # Each direction source, plain and conformal-gated.
+    configs: dict = {}
+    for name, d in directions.items():
+        configs[name] = (d, None)
+        configs[f"{name} +conformal"] = (d, conf_exp)
+
     equity, metrics, weights_by_variant = {}, {}, {}
     bench = None
-    for name, exp in variants.items():
-        res = run_backtest(panel, direction, _CFG, cost, exposure_scale=exp)
+    for name, (d, exp) in configs.items():
+        res = run_backtest(panel, d, _CFG, cost, exposure_scale=exp)
         if bench is None:
             bench = res.benchmarks
         equity[name] = res.equity
         metrics[name] = perf.summary(res.net_returns, benchmark=bench["equal_weight"],
-                                     n_trials=len(variants))
+                                     n_trials=len(configs))
         weights_by_variant[name] = res.weights
     for bname, bret in bench.items():
         equity[f"[bench] {bname}"] = (1.0 + bret.fillna(0.0)).cumprod()
         metrics[f"[bench] {bname}"] = perf.summary(bret, n_trials=1)
 
-    cost_sweep = run_cost_sweep(panel, _CFG, direction,
-                                best_exposure=variants["+regime+meta"])
-
-    # Read ML diagnostics from the last pipeline run if available (LSTM is slow).
-    summary_path = PROJECT_ROOT / "research" / "results" / "summary.json"
-    ml_summary = {}
-    if summary_path.exists():
-        try:
-            ml_summary = json.loads(summary_path.read_text())
-        except Exception:
-            ml_summary = {}
+    cost_sweep = run_cost_sweep(panel, _CFG, directions["baseline"], conf_exp)
 
     ts = trend_state(panel.close, _CFG.strategy.sma_short, _CFG.strategy.sma_long)
-    base_weights = weights_by_variant["baseline"]
+    # Show the strongest variant's book on the Positions panel.
+    best_weights = weights_by_variant.get("baseline +conformal",
+                                          weights_by_variant["baseline"])
 
     return dict(
         panel=panel, equity=equity, metrics=metrics,
-        cost_sweep=cost_sweep, base_weights=base_weights,
-        trend=ts, direction=direction, meta_res=meta_res,
-        regime=regime, ml_summary=ml_summary,
-        last_date=idx[-1],
+        cost_sweep=cost_sweep, base_weights=best_weights,
+        trend=ts, direction=directions["baseline"],
+        diagnostics=diagnostics, last_date=idx[-1],
     )
 
 
@@ -228,8 +217,8 @@ def fig_cost_sweep(R: dict) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=cs.index, y=cs["baseline_sharpe"], mode="lines+markers",
                              name="baseline", line=dict(color=TEXT, width=2)))
-    fig.add_trace(go.Scatter(x=cs.index, y=cs["overlaid_sharpe"], mode="lines+markers",
-                             name="+regime+meta", line=dict(color=WARN, width=2)))
+    fig.add_trace(go.Scatter(x=cs.index, y=cs["gated_sharpe"], mode="lines+markers",
+                             name="baseline +conformal", line=dict(color=WARN, width=2)))
     fig.add_hline(y=0, line=dict(color=BORDER, width=1))
     fig.update_layout(**_base_layout(
         xaxis=dict(title="cost multiplier (× base)"),
@@ -249,23 +238,30 @@ def _stat(label, value, color=TEXT, sub=""):
 
 def overview_panel(R: dict) -> html.Div:
     m = R["metrics"]
-    base, ew, btc = m["baseline"], m["[bench] equal_weight"], m["[bench] btc_hold"]
+    base, btc = m["baseline"], m["[bench] btc_hold"]
+    gated = m.get("baseline +conformal", base)
     verdict = (
-        "Across 2019–2026, the cross-sectional long/short crossover book is NOT "
-        "competitive with buy-and-hold on a risk-adjusted basis, and the ML "
-        "overlays add no out-of-sample lift (see ML Intel). This is the honest, "
-        "rigorously-validated finding — the value here is the methodology, not a "
-        "manufactured edge."
+        "Honest, out-of-sample finding (2019–2026): the three ML signal generators "
+        "(learning-to-rank, regime-switching, lead-lag) all UNDERPERFORM the simple "
+        "baseline — confirmed by their truth-teller diagnostics in ML Intel. But the "
+        "conformal confidence gate is a genuine win: it lifts the baseline Sharpe "
+        f"{base['sharpe']:.2f} → {gated['sharpe']:.2f}, cuts max drawdown "
+        f"{base['max_drawdown']*100:.0f}% → {gated['max_drawdown']*100:.0f}%, and "
+        "stays positive out to ~2× costs (see Costs). Even so, no variant beats "
+        "buy-and-hold in a crypto bull market — beta is hard to beat. The value is "
+        "the rigor and the honesty, plus one component (conformal) that demonstrably helps."
     )
     return html.Div(children=[
         html.Div("Overview", className="panel-title"),
         html.Div(className="stat-row", children=[
-            _stat("Strategy Sharpe", f"{base['sharpe']:.2f}",
+            _stat("Baseline Sharpe", f"{base['sharpe']:.2f}",
                   POS if base['sharpe'] > 0 else NEG, "net of 1× costs"),
-            _stat("Strategy Ann. Return", f"{base['ann_return']*100:+.1f}%",
-                  POS if base['ann_return'] > 0 else NEG),
+            _stat("+ Conformal Sharpe", f"{gated['sharpe']:.2f}",
+                  POS if gated['sharpe'] > 0 else NEG, "best variant"),
             _stat("BTC HODL Sharpe", f"{btc['sharpe']:.2f}", TEXT, "benchmark"),
-            _stat("Equal-Weight Sharpe", f"{ew['sharpe']:.2f}", TEXT, "benchmark"),
+            _stat("Conformal coverage",
+                  f"{(R['diagnostics'].get('conformal',{}).get('empirical_coverage',0))*100:.0f}%",
+                  TEXT, "target 90%"),
         ]),
         html.Div(className="card", style=dict(padding="20px", marginTop="4px"), children=[
             html.Div("Verdict", className="panel-title"),
@@ -339,64 +335,80 @@ def signals_panel(R: dict) -> html.Div:
     ])
 
 
-def ml_panel(R: dict) -> html.Div:
-    ml = R["ml_summary"]
-    meta = R.get("meta_res")
-    regime = R.get("regime")
-    # Meta card
-    if meta is not None:
-        auc = meta.oos_auc
-        meta_body = [
-            html.Div(f"AUC {auc:.2f}", style=dict(color=POS if auc > 0.55 else NEG,
-                     fontWeight="600", fontSize="24px")),
-            html.Div(f"{meta.n_events} events · base rate {meta.base_rate*100:.0f}%",
-                     style=dict(color=TEXT2, fontSize="11px", marginTop="8px")),
-            html.Div("OOS via purged k-fold. AUC ≤ 0.5 ⇒ no usable edge.",
-                     style=dict(color=TEXT2, fontSize="11px", marginTop="6px")),
-        ]
-    else:
-        meta_body = [html.Div("unavailable", style=dict(color=TEXT2))]
-    # Regime card
-    if regime is not None:
-        frac = float((regime < 1.0).mean())
-        regime_body = [
-            html.Div(f"{frac*100:.1f}%", style=dict(color=WARN, fontWeight="600", fontSize="24px")),
-            html.Div("of days flagged abnormal", style=dict(color=TEXT2, fontSize="11px", marginTop="8px")),
-            html.Div("Walk-forward IsolationForest; gating hurt OOS P&L here.",
-                     style=dict(color=TEXT2, fontSize="11px", marginTop="6px")),
-        ]
-    else:
-        regime_body = [html.Div("unavailable", style=dict(color=TEXT2))]
-    # LSTM card (from pipeline summary.json)
-    lstm = ml.get("lstm") if ml else None
-    if lstm:
-        beats = lstm["beats_baseline"]
-        lstm_body = [
-            html.Div("beats RW" if beats else "no skill",
-                     style=dict(color=POS if beats else NEG, fontWeight="600", fontSize="24px")),
-            html.Div(f"RMSE {lstm['oos_rmse']:.4f} vs RW {lstm['baseline_rmse']:.4f}",
-                     style=dict(color=TEXT2, fontSize="11px", marginTop="8px")),
-            html.Div(f"dir acc {lstm['oos_dir_acc']*100:.0f}% vs {lstm['baseline_dir_acc']*100:.0f}%",
-                     style=dict(color=TEXT2, fontSize="11px", marginTop="4px")),
-        ]
-    else:
-        lstm_body = [html.Div("run pipeline", style=dict(color=TEXT2, fontSize="13px")),
-                     html.Div("python -m meridian.pipeline", style=dict(color=TEXT3, fontSize="11px", marginTop="6px"))]
+def _big(text, color):
+    return html.Div(text, style=dict(color=color, fontWeight="600", fontSize="22px"))
 
-    def card(title, sub, body):
-        return html.Div(className="mlcard", children=[
+
+def _note(text):
+    return html.Div(text, style=dict(color=TEXT2, fontSize="11px", marginTop="8px"))
+
+
+def ml_panel(R: dict) -> html.Div:
+    d = R.get("diagnostics", {})
+    m = R["metrics"]
+
+    def sharpe_of(name):
+        return m.get(name, {}).get("sharpe", float("nan"))
+
+    # LTR
+    ltr = d.get("ltr")
+    if ltr:
+        ic = ltr["rank_ic"]
+        ltr_body = [_big(f"IC {ic:+.3f}", POS if ic > 0.03 else NEG),
+                    _note(f"rank IC over OOS rebalances · {ltr['n_refits']} refits"),
+                    _note(f"as a signal: Sharpe {sharpe_of('LTR'):.2f} (worse than baseline)")]
+    else:
+        ltr_body = [_big("n/a", TEXT2)]
+
+    # Regime
+    reg = d.get("regime")
+    if reg:
+        occ = reg.get("occupancy", {})
+        mix = " · ".join(f"{k} {v*100:.0f}%" for k, v in occ.items() if v > 0.01)
+        reg_body = [_big(f"{reg['n_states']} states", TEXT),
+                    _note(f"controller mix: {mix}"),
+                    _note(f"as a signal: Sharpe {sharpe_of('regime'):.2f} (worse than baseline)")]
+    else:
+        reg_body = [_big("n/a", TEXT2)]
+
+    # Lead-lag
+    ll = d.get("leadlag")
+    if ll:
+        hit = ll["oos_hit_rate"]
+        ll_body = [_big(f"{hit*100:.1f}%", POS if hit > 0.52 else NEG),
+                   _note("OOS next-day hit-rate vs 50% coin-flip"),
+                   _note(f"as a signal: Sharpe {sharpe_of('lead-lag'):.2f} (worse than baseline)")]
+    else:
+        ll_body = [_big("n/a", TEXT2)]
+
+    # Conformal (the win)
+    con = d.get("conformal")
+    if con:
+        cov = con["empirical_coverage"]
+        con_body = [_big(f"{cov*100:.1f}% cover", POS if abs(cov - 0.9) < 0.04 else WARN),
+                    _note(f"calibration target 90% · mean exposure {con['mean_exposure']*100:.0f}%"),
+                    _note(f"lifts baseline Sharpe {sharpe_of('baseline'):.2f} → "
+                          f"{sharpe_of('baseline +conformal'):.2f} ✓")]
+    else:
+        con_body = [_big("n/a", TEXT2)]
+
+    def card(title, sub, body, win=False):
+        style = dict(borderColor="rgba(34,197,94,0.35)") if win else {}
+        return html.Div(className="mlcard", style=style, children=[
             html.Div(title, className="title"), html.Div(sub, className="subtitle"), html.Div(body)])
 
     return html.Div(children=[
         html.Div("ML Intel — honest out-of-sample diagnostics", className="panel-title"),
-        html.Div(className="ml-grid", children=[
-            card("RF Meta-Label", "take/skip a signal · purged CV", meta_body),
-            card("Regime Filter", "IsolationForest · walk-forward", regime_body),
-            card("LSTM Forecast", "log-returns vs random walk", lstm_body),
+        html.Div(className="ml-grid", style=dict(gridTemplateColumns="repeat(2,1fr)"), children=[
+            card("Learning-to-Rank", "rank coins, long top / short bottom", ltr_body),
+            card("Regime-Switching (HMM)", "switch strategy per hidden regime", reg_body),
+            card("Lead–Lag Network", "trade laggards on leader moves", ll_body),
+            card("Conformal Gate", "calibrated confidence → exposure", con_body, win=True),
         ]),
-        html.Div("Per the pre-committed rule, a model must prove OOS P&L lift or be "
-                 "shelved. None clears the bar — reported honestly. Model outputs, "
-                 "not financial advice.", className="ml-disclaimer"),
+        html.Div("Pre-committed rule: a model must prove out-of-sample lift or be shelved. "
+                 "The three signal generators do NOT beat the baseline; the conformal gate "
+                 "DOES (and stays positive out to ~2× costs). Model outputs, not financial advice.",
+                 className="ml-disclaimer"),
     ])
 
 

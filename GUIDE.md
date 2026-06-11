@@ -145,23 +145,30 @@ The **Deflated Sharpe ratio** mathematically discounts your headline number by h
 many things you tried, telling you the probability the result is *real* rather
 than the luckiest of many guesses. It's the project's built-in lie detector.
 
-### The three machine-learning models (what they actually do)
-We kept three ML models but **reframed each to answer an honest question**:
-- **LSTM (a neural network)** — tries to **forecast Bitcoin's next-few-days
-  return**. We grade it against the dumbest possible forecast ("tomorrow looks
-  like today," a *random walk*). If it can't beat that, it has no skill.
-- **Random Forest "meta-labeling"** — doesn't predict price. It looks at each
-  crossover signal and predicts **"is this particular signal worth taking, or is
-  it a dud?"** — a quality filter on the base strategy.
-- **Isolation Forest "regime filter"** — flags **weird/abnormal market
-  conditions** (crashes, manias) and tells the strategy to **trade smaller** when
-  the market looks dangerous.
+### The four machine-learning models (what they actually do)
+Instead of trying to *predict price* (nearly impossible), these four let ML do
+what it's better at — learning **order, regimes, relationships, and certainty**:
+- **Learning-to-Rank** — doesn't predict how much each coin moves, just the
+  **order** of which will do best vs worst this week; we then buy the top and
+  short the bottom. (A much easier question than "what's the price tomorrow?")
+- **Regime-switching (HMM)** — discovers **hidden market "moods"** (e.g. calm
+  trending vs choppy) and **switches which strategy runs** in each mood.
+- **Lead–lag network** — learns whether some coins **move first and others
+  follow**, then trades the followers after a leader moves.
+- **Conformal gate** — the clever one. It doesn't predict direction; it produces
+  a **statistically honest confidence level** and tells the book to **bet big only
+  when it's genuinely confident, and shrink when it isn't**. Its confidence claims
+  are *calibrated* — when it says "90% sure," it's right ~90% of the time (we check
+  this: it scored 90.9%).
 
 ### Ablation (the "with vs without" test)
-The decisive experiment: run the strategy **with** each ML model and **without**
-it, on the same data, and see if the model **actually improves the money made**.
-A model that doesn't improve real out-of-sample profit gets **shelved** — no
-matter how fancy it sounds. (Spoiler: all three got shelved, honestly reported.)
+The decisive experiment: run the strategy **with** each model and **without** it,
+on the same data, and see if it **actually improves the money made** out-of-sample.
+A model that doesn't help gets **shelved**, no matter how fancy. The honest result:
+the three "predicting" models (rank, regime, lead–lag) all got **shelved** — they
+made things worse. But the **conformal confidence gate genuinely helped**: it
+roughly **6×'d the risk-adjusted return** (Sharpe 0.05 → 0.33) and **cut the worst
+loss from −60% to −40%**. (Even so, none beat just holding Bitcoin — beta is hard.)
 
 ---
 
@@ -219,14 +226,17 @@ After `./run.sh`, look at the printed table and `research/results/`:
   benchmark lines climbing far above the strategy lines = the strategy
   underperformed.
 - **`cost_sweep.png`.** Sharpe as trading costs rise. A real edge stays positive
-  as costs grow; a fake one collapses. Ours collapses.
-- **ML diagnostics (`summary.json` / ML Intel panel).** `beats_baseline: false`
-  (LSTM has no skill), `oos_auc: 0.38` (below 0.50 means the meta-label model is
-  worse than a coin flip out-of-sample).
+  as costs grow; a fragile one collapses. The plain baseline collapses by ~1×
+  costs; the **conformal-gated** baseline stays positive out to ~2×.
+- **ML diagnostics (`summary.json` / ML Intel panel).** The truth-tellers: rank IC
+  ≈ −0.04 (no ranking skill), lead-lag hit-rate ≈ 0.51 (coin-flip), regime mostly
+  collapses to trend — all shelved; but conformal coverage ≈ 0.91 (calibration
+  works) and it lifts the baseline Sharpe to 0.33.
 
-**What "good" would have looked like:** a strategy Sharpe clearly above the
-benchmarks, staying positive across the cost sweep, with a Deflated Sharpe near
-1.0. We did not get that — and we report it plainly.
+**What a full "win" would have looked like:** a strategy Sharpe clearly *above*
+the benchmarks, staying positive across the cost sweep, with a Deflated Sharpe
+near 1.0. We got a genuine *partial* win (conformal helps, validated) but not a
+beat-the-benchmark win — and we report both plainly.
 
 ---
 
@@ -289,6 +299,9 @@ research/report.md   The formal write-up of methodology and findings.
 | Purged CV | Finance-correct ML testing that prevents leakage |
 | Deflated Sharpe | Sharpe discounted for how many things you tried (lie detector) |
 | Ablation | "With vs without" test of whether a component helps |
-| LSTM / Random Forest / Isolation Forest | The three ML models (forecast / signal-filter / danger-detector) |
+| Learning-to-Rank | ML that predicts the *order* of winners/losers (not prices) |
+| HMM regime-switching | ML that finds hidden market "moods" and switches strategy |
+| Lead–lag network | ML that learns which coins move first and which follow |
+| Conformal prediction | Calibrated confidence; bet big only when genuinely sure |
 
 For the rigorous version of all this, see [`research/report.md`](research/report.md).

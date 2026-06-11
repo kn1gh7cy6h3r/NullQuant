@@ -12,12 +12,15 @@ clear or be shelved.
 > **[`GUIDE.md`](GUIDE.md)** first — it explains the entire project, and every
 > term in it, in plain English with no assumed knowledge.
 
-> **Headline finding (negative, and that's the point):** a naive cross-sectional
-> SMA-crossover long/short book does **not** beat buy-and-hold on a risk-adjusted
-> basis over 2019–2026, and none of the three ML overlays adds out-of-sample
-> value once costs and proper validation are applied. See
-> [`research/report.md`](research/report.md). The deliverable here is the
-> rigorous infrastructure and the honest read — not a manufactured edge.
+> **Headline finding (nuanced, and that's the point):** four creative ML models
+> were built and held to an out-of-sample P&L ablation. The three *signal
+> generators* (learning-to-rank, HMM regime-switching, lead–lag network) all
+> **underperform** a simple baseline — but the **conformal confidence gate** is a
+> genuine, validated win: it lifts baseline Sharpe **0.05 → 0.33**, nearly halves
+> drawdown, and stays positive out to **~2× costs**. Even so, **no variant beats
+> buy-and-hold** in a crypto bull market. See [`research/report.md`](research/report.md).
+> The deliverable is rigorous infrastructure, an honest read, and one component
+> that demonstrably helps — not a manufactured edge.
 
 ## Why this is built the way it is
 
@@ -51,10 +54,11 @@ meridian/
     splitters.py       walk-forward + purged k-fold (embargo)
     walk_forward.py    out-of-sample strategy evaluation
   ml/
-    lstm_forecast.py   LSTM on stationary log-returns, vs random-walk baseline
-    rf_meta.py         Random Forest meta-labeling, purged-CV OOS AUC
-    regime_iforest.py  Isolation Forest regime filter (walk-forward, no leakage)
-  ablation.py          baseline vs +regime vs +meta vs both, + cost sweep
+    rank_model.py      learning-to-rank cross-sectional selector (OOS rank IC)
+    regime_switch.py   HMM regime-switching meta-controller (trend vs mean-revert)
+    lead_lag.py        lead-lag contagion network (OOS next-day hit-rate)
+    conformal.py       conformal confidence-gated sizing (validated 90% coverage)
+  ablation.py          baseline vs LTR/regime/lead-lag, each × conformal, + cost sweep
   pipeline.py          reproducible end-to-end run -> research/results/
 ```
 
@@ -65,7 +69,6 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 python -m meridian.pipeline        # full research run (writes research/results/)
-python -m meridian.pipeline --no-lstm   # skip the slow LSTM step
 python -m pytest tests/ -q         # 43 tests: causality, accounting, no-leakage
 ```
 
