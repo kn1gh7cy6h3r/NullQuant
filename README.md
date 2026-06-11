@@ -1,6 +1,6 @@
 # NullQuant
 
-![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/kn1gh7cy6h3r/NullQuant/actions/workflows/ci.yml/badge.svg)
 
 A **long/short, volatility-targeted, multi-crypto** trading research system —
 built to test a cross-sectional trend hypothesis *honestly*, with the
@@ -67,13 +67,37 @@ nullquant/
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-python -m nullquant.pipeline        # full research run (writes research/results/)
-python -m pytest tests/ -q         # 43 tests: causality, accounting, no-leakage
 ```
 
-Light/CI dependencies (no torch/keras/UI) are in `requirements-dev.txt`; CI runs
-the foundation test suite on every push.
+```bash
+./run.sh               # full research pipeline (data → ML → results → artifacts)
+./run.sh dashboard     # launch interactive research dashboard at http://localhost:8050
+./run.sh tests         # 43 tests: causality, accounting identities, no-leakage
+```
+
+**The pipeline fits all four ML models walk-forward on first run (~5 min) and
+caches the result.** The dashboard reads from that cache on every subsequent
+launch — startup is under 1 second. Force a full retrain with:
+
+```bash
+./run.sh pipeline --refresh-signals
+```
+
+Light/CI dependencies (no UI or ML) are in `requirements-dev.txt`; CI runs the
+foundation test suite on every push.
+
+## Dashboard
+
+`./run.sh dashboard` opens an interactive research UI with six panels:
+
+- **Overview** — headline metrics, honest verdict, key stats
+- **Equity** — strategy variants vs benchmarks (log scale, TradingView-style controls)
+- **Positions** — current target weights + weight history heatmap
+- **Signals** — per-asset trend state and latest signal direction
+- **Costs** — Sharpe vs cost-multiplier robustness curve
+- **ML Intel** — per-model diagnostics (rank IC, regime occupancy, lead-lag hit-rate, conformal coverage)
+
+Set `NULLQUANT_DEBUG=1` to enable hot-reload when editing `dashboard.py`.
 
 ## Configuration
 
