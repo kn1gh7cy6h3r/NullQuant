@@ -1,17 +1,23 @@
+# ── Core: data, compute, app ──────────────────────────────────────────────────
 yfinance>=0.2.28
 requests>=2.28.0
+pysocks>=1.7          # only needed if a SOCKS proxy is set; silences urllib3 warning
 pandas>=2.0.0
 numpy>=1.24.0
+scipy>=1.11.0         # Deflated/Probabilistic Sharpe (scipy.stats)
+pyyaml>=6.0           # config/config.yaml
+pyarrow>=12.0.0       # parquet cache
 plotly>=5.15.0
 dash>=2.11.0
-pyarrow>=12.0.0
 
-# ── ML intelligence layer (ml_engine.py) ──────────────────────────────────────
-# Models B & C (Random Forest, Isolation Forest):
+# ── Machine-learning layer ────────────────────────────────────────────────────
+# Meta-labeling RF + Isolation Forest regime filter:
 scikit-learn>=1.5
-# Model A (LSTM forecast). NOTE: tensorflow-macos / tensorflow-metal have no
-# wheels for Python 3.14, so the LSTM runs on Keras 3 with the PyTorch backend,
-# which still gets Apple-Silicon GPU acceleration via torch's Metal (MPS) device.
-# ml_engine sets KERAS_BACKEND=torch automatically at import time.
+# LSTM return forecast. tensorflow-macos/metal have no Python 3.14 wheels, so the
+# LSTM runs on Keras 3 with the PyTorch backend (Apple-Silicon MPS accelerated).
+# meridian/ml/lstm_forecast.py sets KERAS_BACKEND=torch before importing keras.
 torch>=2.2
 keras>=3.5
+
+# ── Reporting figures (optional) ──────────────────────────────────────────────
+kaleido>=0.2          # static PNG export for research/results/ figures

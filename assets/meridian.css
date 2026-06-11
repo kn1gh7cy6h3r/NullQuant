@@ -359,6 +359,14 @@ body {
 .mlcard .subtitle { font-size: 11px; color: var(--text-2); margin: 5px 0 18px 0; }
 .ml-disclaimer { font-size: 11px; color: var(--text-3); margin-top: 18px; }
 
+/* ── DataTable row hover: dark text on the light hover background ──────────── */
+.dash-spreadsheet-container .dash-spreadsheet-inner tr:hover td.dash-cell,
+.dash-spreadsheet-container .dash-spreadsheet-inner tr:hover td.dash-cell *,
+.dash-spreadsheet-container .dash-spreadsheet-inner tr:hover td.dash-cell .dash-cell-value {
+    background-color: #ffffff !important;
+    color: #0a0a0a !important;
+}
+
 /* ── In-app guide (rendered markdown) ─────────────────────────────────────── */
 .markdown-body {
     max-width: 860px;

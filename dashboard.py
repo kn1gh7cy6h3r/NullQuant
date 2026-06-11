@@ -71,13 +71,45 @@ def _base_layout(**over) -> dict:
                         font=dict(color=TEXT, size=11)),
         legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=TEXT2, size=10),
                     orientation="h", y=1.02, x=0),
+        # Pan-to-drag (TradingView feel; scroll to zoom is set in _GRAPH_CFG),
+        # and uirevision so the 30s auto-refresh never resets the user's zoom/pan.
+        dragmode="pan",
+        uirevision="keep",
     )
     for k, v in over.items():
         base[k] = {**base[k], **v} if k in base and isinstance(base[k], dict) and isinstance(v, dict) else v
     return base
 
 
-_GRAPH_CFG = dict(displayModeBar=False, scrollZoom=True, displaylogo=False)
+def _time_xaxis(slider: bool = True) -> dict:
+    """A date x-axis with TradingView-style range buttons, crosshair spike, and
+    (optionally) a range slider. Merged onto the base x-axis styling."""
+    ax = dict(
+        showspikes=True, spikecolor=TEXT2, spikethickness=1,
+        spikedash="solid", spikemode="across", spikesnap="cursor",
+        rangeselector=dict(
+            buttons=[
+                dict(count=1, label="1M", step="month", stepmode="backward"),
+                dict(count=6, label="6M", step="month", stepmode="backward"),
+                dict(count=1, label="YTD", step="year", stepmode="todate"),
+                dict(count=1, label="1Y", step="year", stepmode="backward"),
+                dict(count=5, label="5Y", step="year", stepmode="backward"),
+                dict(step="all", label="ALL"),
+            ],
+            bgcolor=SURFACE, activecolor="rgba(255,255,255,0.16)",
+            bordercolor=BORDER, borderwidth=1,
+            font=dict(color=TEXT2, size=10),
+            x=0, xanchor="left", y=1.06, yanchor="bottom",
+        ),
+    )
+    if slider:
+        ax["rangeslider"] = dict(visible=True, thickness=0.06, bgcolor=SURFACE,
+                                 bordercolor=BORDER, borderwidth=1)
+    return ax
+
+
+_GRAPH_CFG = dict(displayModeBar=False, scrollZoom=True, displaylogo=False,
+                  doubleClick="reset")
 
 
 def compute_results() -> dict:
@@ -155,7 +187,12 @@ def fig_equity(R: dict) -> go.Figure:
                       width=2 if not is_bench else 1.5,
                       dash="dash" if is_bench else "solid"),
         ))
-    fig.update_layout(**_base_layout(yaxis=dict(type="log", title="growth of $1 (log)")))
+    fig.update_layout(**_base_layout(
+        yaxis=dict(type="log", title="growth of $1 (log)"),
+        xaxis=_time_xaxis(slider=True),
+        margin=dict(l=56, r=20, t=44, b=30),
+        legend=dict(y=1.16),
+    ))
     return fig
 
 
@@ -178,7 +215,11 @@ def fig_weights_heatmap(R: dict) -> go.Figure:
         colorscale=[[0, NEG], [0.5, "#111111"], [1, POS]], zmid=0,
         colorbar=dict(title="w", tickfont=dict(color=TEXT2, size=9)),
     ))
-    fig.update_layout(**_base_layout(margin=dict(l=70, r=20, t=20, b=30)))
+    fig.update_layout(**_base_layout(
+        xaxis=_time_xaxis(slider=False),
+        margin=dict(l=70, r=20, t=44, b=30),
+        hovermode="closest",
+    ))
     return fig
 
 
