@@ -57,25 +57,34 @@ validation:
     n_splits: 6
     embargo_frac: 0.01         # embargo as a fraction of total sample length
 
+# ── ML layer (rebuilt) ────────────────────────────────────────────────────────
+# Four creative, OOS-validated models. Three produce a trading DIRECTION
+# (learning-to-rank, regime-switching, lead-lag); conformal produces a
+# confidence-based EXPOSURE multiplier that can size any of them.
 ml:
-  lstm:
-    window: 60                 # input sequence length (days)
-    horizon: 5                 # forecast horizon (days) — predict log-returns
-    units: 32
-    dropout: 0.2
-    epochs: 30
-    batch_size: 32
-    target: "logret"           # "logret" or "vol"
-  rf_meta:
+  horizon: 5                   # forward horizon (trading days) for ML targets
+
+  ltr:                         # learning-to-rank cross-sectional selector
+    lookbacks: [10, 30, 90]    # momentum feature lookbacks (days)
+    train_years: 3             # trailing training window
+    refit_every: 21            # walk-forward refit cadence (days)
+    top_k: 3                   # long the top-k ranked coins
+    bottom_k: 3                # short the bottom-k ranked coins
     n_estimators: 300
-    min_samples_leaf: 5
-    max_depth: 6
-    # Triple-barrier labeling for the meta-label target.
-    pt_atr_mult: 2.0           # profit-take = pt_atr_mult * ATR
-    sl_atr_mult: 2.0           # stop-loss   = sl_atr_mult * ATR
-    max_hold_days: 30          # vertical (time) barrier
-    take_threshold: 0.5        # P(profit) above which we TAKE the signal
-  regime:
-    lookback: 252              # trailing window the IsoForest fits on
-    contamination: 0.05
-    suppress_scale: 0.3        # scale exposure to this when regime is abnormal
+
+  regime:                      # HMM regime-switching meta-controller
+    n_states: 3
+    train_years: 3
+    refit_every: 21
+
+  leadlag:                     # lead-lag contagion network
+    max_lag: 5                 # search leads up to this many days
+    lookback: 120              # trailing window to estimate the network
+    refit_every: 21
+    top_edges: 8               # strongest directed edges kept each refit
+
+  conformal:                   # conformal confidence-gated sizing overlay
+    alpha: 0.10                # 1 − coverage (0.10 ⇒ 90% prediction intervals)
+    train_years: 3
+    calib_frac: 0.3            # fraction of the train window held out for calibration
+    refit_every: 21
