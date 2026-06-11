@@ -8,6 +8,10 @@ methodology a quant research desk would expect: realistic costs, strictly
 out-of-sample validation, and an intellectual-honesty bar that every model must
 clear or be shelved.
 
+> **New here / non-finance background?** Read
+> **[`GUIDE.md`](GUIDE.md)** first — it explains the entire project, and every
+> term in it, in plain English with no assumed knowledge.
+
 > **Headline finding (negative, and that's the point):** a naive cross-sectional
 > SMA-crossover long/short book does **not** beat buy-and-hold on a risk-adjusted
 > basis over 2019–2026, and none of the three ML overlays adds out-of-sample
