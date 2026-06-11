@@ -1,8 +1,8 @@
 """
-dashboard.py — interactive view of the Meridian research system.
+dashboard.py — interactive view of the NullQuant research system.
 
 This is a MONITORING/REPORTING surface over the rigorous engine in the
-`meridian` package, not a second source of truth. The heavy research (backtest,
+`nullquant` package, not a second source of truth. The heavy research (backtest,
 overlays, metrics, cost sweep) is computed ONCE and cached; the 30s interval
 only refreshes display-only live prices. Daily bars barely change intraday, and
 nothing here mutates the historical panel — so there is no repainting.
@@ -15,12 +15,13 @@ Panels (fixed sidebar, one at a time):
   Costs     · Sharpe vs cost-multiplier robustness curve
   ML Intel  · RF meta AUC, regime stats, LSTM-vs-random-walk (honest)
 
-Styling lives in assets/meridian.css; sidebar navigation in assets/meridian.js.
+Styling lives in assets/nullquant.css; sidebar navigation in assets/nullquant.js.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 import traceback
 
 import numpy as np
@@ -30,16 +31,16 @@ import dash
 from dash import dcc, html, dash_table
 from dash.dependencies import Input, Output
 
-from meridian.config import load_config, PROJECT_ROOT
-from meridian.seeds import set_global_seed
-from meridian.data.loader import load_history, fetch_live_prices
-from meridian.signals.base import target_directions, trend_state
-from meridian.portfolio.costs import CostModel
-from meridian.portfolio.backtest import run_backtest
-from meridian.metrics import performance as perf
-from meridian.ablation import compute_signals, run_cost_sweep
+from nullquant.config import load_config, PROJECT_ROOT
+from nullquant.seeds import set_global_seed
+from nullquant.data.loader import load_history, fetch_live_prices
+from nullquant.signals.base import target_directions, trend_state
+from nullquant.portfolio.costs import CostModel
+from nullquant.portfolio.backtest import run_backtest
+from nullquant.metrics import performance as perf
+from nullquant.ablation import compute_signals_cached, run_cost_sweep
 
-# ── Palette (matches assets/meridian.css) ─────────────────────────────────────
+# ── Palette (matches assets/nullquant.css) ─────────────────────────────────────
 BG, SURFACE = "#0a0a0a", "#0f0f0f"
 TEXT, TEXT2, TEXT3 = "#ededed", "#737373", "#404040"
 POS, NEG, WARN, ACCENT = "#22c55e", "#ef4444", "#f59e0b", "#ffffff"
@@ -49,6 +50,7 @@ REFRESH_MS = 30_000
 
 _CFG = load_config()
 _RESULTS: dict | None = None  # cached heavy research output
+_RESULTS_LOCK = threading.Lock()  # serialise compute so we never fit twice
 
 # Plain-English guide, rendered inside the app so newcomers never leave the page.
 try:
@@ -114,13 +116,16 @@ _GRAPH_CFG = dict(displayModeBar=False, scrollZoom=True, displaylogo=False,
 
 def compute_results() -> dict:
     """Compute all signal sources + the conformal gate once, run every variant
-    backtest, and cache. The four ML models are fit ONCE here (via compute_signals)."""
+    backtest, and cache. The four ML models are loaded from the pipeline's
+    on-disk cache when available (same config + data fingerprint); they are only
+    refit here on a cold cache — so launching the dashboard after `./run.sh`
+    starts in seconds instead of retraining."""
     set_global_seed(_CFG.seed)
     panel = load_history(_CFG)
     cost = CostModel.from_config(_CFG, multiplier=1.0)
     idx = panel.close.index
 
-    directions, conf_exp, diagnostics = compute_signals(panel, _CFG)
+    directions, conf_exp, diagnostics = compute_signals_cached(panel, _CFG)
 
     # Each direction source, plain and conformal-gated.
     configs: dict = {}
@@ -158,10 +163,26 @@ def compute_results() -> dict:
 
 
 def get_results() -> dict:
+    """Return the cached research payload, computing it once on first access.
+
+    The lock serialises callers so a warm-up thread and the first dashboard
+    callback can't both trigger a (5-minute) fit — the second waits and reuses
+    the result. With a warm signal cache the compute is just fast backtests."""
     global _RESULTS
-    if _RESULTS is None:
-        _RESULTS = compute_results()
+    with _RESULTS_LOCK:
+        if _RESULTS is None:
+            _RESULTS = compute_results()
     return _RESULTS
+
+
+def warm_results() -> None:
+    """Kick the compute off the web-request path so the server stays responsive
+    while results are being prepared (used as a background warm-up at startup)."""
+    try:
+        get_results()
+        print("[dashboard] research ready — dashboard is live")
+    except Exception:
+        traceback.print_exc()
 
 
 # ── Figures ───────────────────────────────────────────────────────────────────
@@ -414,7 +435,7 @@ def ml_panel(R: dict) -> html.Div:
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
-app = dash.Dash(__name__, title="Meridian · Research", update_title=None,
+app = dash.Dash(__name__, title="NullQuant · Research", update_title=None,
                 external_scripts=[{"src": "https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"}])
 server = app.server
 
@@ -438,7 +459,7 @@ def _chart_panel(panel, gid, active=False):
 
 app.layout = html.Div(className="app", children=[
     html.Div(className="header", children=[
-        html.Div(className="hdr-left", children=[html.Div("MERIDIAN", className="wordmark")]),
+        html.Div(className="hdr-left", children=[html.Div("NULLQUANT", className="wordmark")]),
         html.Div(id="header-stats", className="hdr-right"),
     ]),
     html.Div(className="body-row", children=[
@@ -526,7 +547,7 @@ def refresh(n):
             ]),
         ])
 
-        footer = (f"MERIDIAN · data through {R['last_date'].date()} · "
+        footer = (f"NULLQUANT · data through {R['last_date'].date()} · "
                   f"{len(R['panel'].assets)} assets · long/short vol-targeted · "
                   f"net of costs · live price display-only (no repainting)")
 

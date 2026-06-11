@@ -1,5 +1,5 @@
 """
-conftest.py — shared synthetic fixtures for Meridian foundation tests.
+conftest.py — shared synthetic fixtures for NullQuant foundation tests.
 
 Builds a deterministic 3-asset OHLCV Panel (~400 daily rows) and a Config
 without touching the network or the real data cache.
@@ -11,8 +11,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from meridian.config import load_config
-from meridian.data.loader import Panel
+from nullquant.config import load_config
+from nullquant.data.loader import Panel
 
 ASSETS = ["BTC-USD", "ETH-USD", "LTC-USD"]
 N_ROWS = 420  # >200 so SMA200 eventually has values; >365 so vol-targeting warms up

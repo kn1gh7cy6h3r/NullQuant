@@ -1,5 +1,5 @@
 """
-test_backtest.py — accounting identity tests for meridian.portfolio.backtest.run_backtest.
+test_backtest.py — accounting identity tests for nullquant.portfolio.backtest.run_backtest.
 
 Tests:
   1. equity == (1 + net_returns).cumprod() (within float tolerance).
@@ -18,8 +18,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from meridian.portfolio.backtest import run_backtest
-from meridian.portfolio.costs import CostModel
+from nullquant.portfolio.backtest import run_backtest
+from nullquant.portfolio.costs import CostModel
 
 EPSILON = 1e-8
 

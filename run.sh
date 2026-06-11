@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Meridian launcher.
+# NullQuant launcher.
 #   ./run.sh            -> run the full research pipeline (data -> ablation -> report artifacts)
 #   ./run.sh pipeline   -> same as above
 #   ./run.sh tests      -> run the pytest suite
@@ -11,7 +11,7 @@ source .venv/bin/activate
 
 cmd="${1:-pipeline}"
 case "$cmd" in
-  pipeline)  python -m meridian.pipeline "${@:2}" ;;
+  pipeline)  python -m nullquant.pipeline "${@:2}" ;;
   tests)     python -m pytest tests/ -q ;;
   dashboard) python main.py ;;
   *) echo "usage: ./run.sh [pipeline|tests|dashboard]"; exit 1 ;;

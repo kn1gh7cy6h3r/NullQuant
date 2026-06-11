@@ -1,5 +1,5 @@
 """
-Meridian — a rigorously validated, long/short, vol-targeted multi-crypto
+NullQuant — a rigorously validated, long/short, vol-targeted multi-crypto
 trading research system.
 
 The package is organised by responsibility:

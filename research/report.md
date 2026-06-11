@@ -1,4 +1,4 @@
-# Meridian — Research Report
+# NullQuant — Research Report
 
 *A long/short, vol-targeted, multi-crypto trend strategy, evaluated honestly.*
 
@@ -14,7 +14,7 @@
 > hard to beat. The contribution is the rigor, the honesty, and one component
 > that demonstrably helps.
 
-All numbers below are reproduced by `python -m meridian.pipeline` (seed 42) and
+All numbers below are reproduced by `python -m nullquant.pipeline` (seed 42) and
 are written to `research/results/`.
 
 ---
@@ -169,7 +169,7 @@ any attempt to predict direction* — a genuinely useful, somewhat unusual findi
 
 ```bash
 pip install -r requirements.txt
-python -m meridian.pipeline          # full run (writes research/results/)
+python -m nullquant.pipeline          # full run (writes research/results/)
 python -m pytest tests/ -q           # 43 tests: causality, accounting, no-leakage
 ```
 

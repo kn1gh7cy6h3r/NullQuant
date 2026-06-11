@@ -1,5 +1,5 @@
 # ============================================================================
-# Meridian — research configuration
+# NullQuant — research configuration
 # Single source of truth for the universe, strategy, costs, and validation.
 # Everything downstream reads from here so runs are reproducible and auditable.
 # ============================================================================

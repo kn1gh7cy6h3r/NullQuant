@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from meridian.validation.splitters import walk_forward_splits, PurgedKFold
+from nullquant.validation.splitters import walk_forward_splits, PurgedKFold
 
 
 def test_walk_forward_train_precedes_test():

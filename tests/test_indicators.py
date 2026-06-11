@@ -1,5 +1,5 @@
 """
-test_indicators.py — causality / no-look-ahead tests for meridian.features.indicators.
+test_indicators.py — causality / no-look-ahead tests for nullquant.features.indicators.
 
 For each indicator we verify:
   1. The overlapping prefix of full-series output matches a truncated-series output
@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from meridian.features.indicators import (
+from nullquant.features.indicators import (
     atr,
     cross_sectional_rank,
     momentum,

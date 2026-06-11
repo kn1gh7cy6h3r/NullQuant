@@ -1,5 +1,5 @@
 /* ============================================================================
-   meridian.js — UI behaviour for Meridian (pure client side).
+   nullquant.js — UI behaviour for NullQuant (pure client side).
 
    Two jobs, both kept entirely in the browser so the single Dash data
    callback is never touched:

@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from meridian.metrics import performance as perf
+from nullquant.metrics import performance as perf
 
 
 @pytest.fixture

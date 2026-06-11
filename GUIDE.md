@@ -1,4 +1,4 @@
-# Understanding Meridian — a plain-English guide
+# Understanding NullQuant — a plain-English guide
 
 This guide assumes **zero finance background**. By the end you'll understand what
 this project is, what every part does, what happens when you run it, and how to
@@ -8,7 +8,7 @@ read the results. No jargon goes unexplained.
 
 ## 1. The one-paragraph version
 
-Meridian is a **research project that tests a trading idea honestly**. The idea:
+NullQuant is a **research project that tests a trading idea honestly**. The idea:
 "buy crypto coins that are going up, sell short the ones going down, and you'll
 make money." We built a careful simulator to check whether that idea actually
 works once you account for real-world frictions (trading fees) and once you stop
@@ -34,7 +34,7 @@ money, a smart person would:
 4. **Compare to doing nothing clever** — if just leaving your money in the bank
    beats your fancy system, the system is worthless. (This is the **benchmark**.)
 
-Meridian does all four, rigorously, for a crypto trading idea. Most amateur
+NullQuant does all four, rigorously, for a crypto trading idea. Most amateur
 trading projects skip steps 2–4 and "discover" edges that don't exist.
 
 ---
@@ -98,7 +98,7 @@ information that was *actually known by then* — no peeking at the future.
 ### Look-ahead bias and "repainting"
 **Look-ahead bias** = accidentally using future information (e.g. today's final
 price before the day is over). **Repainting** = when a chart silently rewrites the
-past as new data arrives, making a strategy look better than it was. Meridian
+past as new data arrives, making a strategy look better than it was. NullQuant
 forbids both: all calculations use only **completed** daily bars, and the live
 price is shown for display only — it never edits history.
 
@@ -174,7 +174,7 @@ loss from −60% to −40%**. (Even so, none beat just holding Bitcoin — beta 
 
 ## 4. What happens when you run it (step by step)
 
-When you run the pipeline, Meridian:
+When you run the pipeline, NullQuant:
 
 1. **Downloads daily prices** for 8 big cryptocurrencies (Bitcoin, Ethereum, etc.)
    and caches them locally.
@@ -243,7 +243,7 @@ beat-the-benchmark win — and we report both plainly.
 ## 7. Why a "negative" result is the whole point
 
 It would have been easy to tweak knobs until a chart looked amazing — and
-completely fake. Instead, Meridian was built so it **cannot lie to itself**, and
+completely fake. Instead, NullQuant was built so it **cannot lie to itself**, and
 the honest verdict is: *this simple idea doesn't beat just holding Bitcoin once
 you account for costs and test it properly.*
 
@@ -259,7 +259,7 @@ To a serious quant employer that is a **strong** result, because it demonstrates
 
 ```
 config/config.yaml      All the settings (which coins, risk level, costs) in one place.
-meridian/
+nullquant/
   data/        Downloads & organizes the price history (no future-peeking).
   features/    Turns raw prices into indicators (averages, volatility) and labels.
   signals/     Decides which coins to long/short each week.

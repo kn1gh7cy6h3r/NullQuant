@@ -1,7 +1,7 @@
 """
 pipeline.py — reproducible end-to-end research run.
 
-    python -m meridian.pipeline
+    python -m nullquant.pipeline
 
 Loads config + data, runs the ablation (baseline + four ML signal sources, each
 also conformal-gated, + cost sweep), and writes auditable artifacts to
@@ -66,7 +66,7 @@ def _save_figures(out: dict) -> None:
         fig2.write_html(str(RESULTS_DIR / "cost_sweep.html"))
 
 
-def run_pipeline() -> dict:
+def run_pipeline(refresh_signals: bool = False) -> dict:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     cfg = load_config()
     set_global_seed(cfg.seed)
@@ -77,7 +77,7 @@ def run_pipeline() -> dict:
           f"{panel.index.min().date()} -> {panel.index.max().date()}")
 
     print("[pipeline] running ablation (fits all four ML models walk-forward)…")
-    out = run_ablation(panel, cfg)
+    out = run_ablation(panel, cfg, refresh_signals=refresh_signals)
 
     variants = out["variants"]
     variants.to_csv(RESULTS_DIR / "variants.csv")
@@ -109,8 +109,11 @@ def run_pipeline() -> dict:
 
 
 def main() -> None:
-    argparse.ArgumentParser(description="Meridian research pipeline").parse_args()
-    run_pipeline()
+    ap = argparse.ArgumentParser(description="NullQuant research pipeline")
+    ap.add_argument("--refresh-signals", action="store_true",
+                    help="force a full ML refit, ignoring the cached signals")
+    args = ap.parse_args()
+    run_pipeline(refresh_signals=args.refresh_signals)
 
 
 if __name__ == "__main__":

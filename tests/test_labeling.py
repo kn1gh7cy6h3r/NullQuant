@@ -1,5 +1,5 @@
 """
-test_labeling.py — correctness tests for meridian.features.labeling.triple_barrier_labels_one.
+test_labeling.py — correctness tests for nullquant.features.labeling.triple_barrier_labels_one.
 
 Key guarantees checked:
   1. Strictly rising close + long event => label=1, ret>0.
@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from meridian.features.labeling import triple_barrier_labels_one
+from nullquant.features.labeling import triple_barrier_labels_one
 
 
 # ---------------------------------------------------------------------------

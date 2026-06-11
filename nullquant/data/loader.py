@@ -170,5 +170,5 @@ def fetch_live_prices(cfg: Config) -> dict[str, float]:
                 out[ticker] = float(data[cg]["usd"])
         return out
     except Exception as exc:  # pragma: no cover - network dependent
-        print(f"[Meridian] Live price fetch failed: {exc}")
+        print(f"[NullQuant] Live price fetch failed: {exc}")
         return {}

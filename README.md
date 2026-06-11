@@ -1,4 +1,4 @@
-# Meridian
+# NullQuant
 
 ![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)
 
@@ -24,10 +24,10 @@ clear or be shelved.
 
 ## Why this is built the way it is
 
-Most retail "backtests" are wrong in the same few ways. Meridian is designed to
+Most retail "backtests" are wrong in the same few ways. NullQuant is designed to
 avoid each:
 
-| Common failure | What Meridian does |
+| Common failure | What NullQuant does |
 |---|---|
 | No transaction costs | Fee + spread + slippage on turnover, with a **0×–4× sensitivity sweep** |
 | In-sample / overfit | **Walk-forward** + **purged k-fold CV with embargo**; **Deflated Sharpe** |
@@ -39,7 +39,7 @@ avoid each:
 ## Architecture
 
 ```
-meridian/
+nullquant/
   config.py            YAML config loader            seeds.py   deterministic seeding
   data/loader.py       multi-asset OHLCV, point-in-time, no repainting
   features/
@@ -68,7 +68,7 @@ meridian/
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-python -m meridian.pipeline        # full research run (writes research/results/)
+python -m nullquant.pipeline        # full research run (writes research/results/)
 python -m pytest tests/ -q         # 43 tests: causality, accounting, no-leakage
 ```
 
