@@ -1,0 +1,41 @@
+{
+  "n_trials": 4,
+  "best_variant_by_sharpe": "[bench] equal_weight",
+  "variants_sharpe": {
+    "baseline": 0.0505,
+    "+regime": -0.1903,
+    "+meta": -0.0005,
+    "+regime+meta": -0.2185,
+    "[bench] equal_weight": 1.069,
+    "[bench] btc_hold": 0.9168
+  },
+  "variants_ann_return": {
+    "baseline": -0.0159,
+    "+regime": -0.066,
+    "+meta": -0.02,
+    "+regime+meta": -0.0574,
+    "[bench] equal_weight": 0.6846,
+    "[bench] btc_hold": 0.4507
+  },
+  "variants_deflated_sharpe": {
+    "baseline": 0.1803,
+    "+regime": 0.0578,
+    "+meta": 0.1461,
+    "+regime+meta": 0.0493,
+    "[bench] equal_weight": 0.9982,
+    "[bench] btc_hold": 0.9934
+  },
+  "lstm": {
+    "target": "logret",
+    "oos_rmse": 0.049547,
+    "baseline_rmse": 0.047461,
+    "oos_dir_acc": 0.5151,
+    "baseline_dir_acc": 0.4799,
+    "beats_baseline": false
+  },
+  "meta": {
+    "n_events": 130,
+    "oos_auc": 0.3765,
+    "base_rate": 0.4154
+  }
+}
