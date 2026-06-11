@@ -50,6 +50,12 @@ REFRESH_MS = 30_000
 _CFG = load_config()
 _RESULTS: dict | None = None  # cached heavy research output
 
+# Plain-English guide, rendered inside the app so newcomers never leave the page.
+try:
+    GUIDE_MD = (PROJECT_ROOT / "GUIDE.md").read_text()
+except Exception:
+    GUIDE_MD = "# Guide\n\nGUIDE.md not found."
+
 
 def _base_layout(**over) -> dict:
     base = dict(
@@ -391,6 +397,7 @@ app.layout = html.Div(className="app", children=[
                 _nav("signals", "activity", "Signals"),
                 _nav("costs", "dollar-sign", "Costs"),
                 _nav("ml", "brain", "ML Intel"),
+                _nav("guide", "book-open", "Guide"),
             ]),
             html.Div("v2.0 · research", className="sidebar-footer"),
         ]),
@@ -413,6 +420,10 @@ app.layout = html.Div(className="app", children=[
                          "realistic friction.", className="ml-disclaimer"),
             ]),
             _panel("ml", "scroll pad", [html.Div(id="ml-content")]),
+            # Static plain-English guide rendered in-app (no callback needed).
+            _panel("guide", "scroll pad", [
+                dcc.Markdown(GUIDE_MD, className="markdown-body", link_target="_blank"),
+            ]),
         ]),
     ]),
     html.Div(id="footer", className="footer"),

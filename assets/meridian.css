@@ -359,5 +359,56 @@ body {
 .mlcard .subtitle { font-size: 11px; color: var(--text-2); margin: 5px 0 18px 0; }
 .ml-disclaimer { font-size: 11px; color: var(--text-3); margin-top: 18px; }
 
+/* ── In-app guide (rendered markdown) ─────────────────────────────────────── */
+.markdown-body {
+    max-width: 860px;
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.7;
+}
+.markdown-body h1 {
+    font-size: 24px; font-weight: 600; letter-spacing: -0.01em;
+    margin: 8px 0 16px 0; color: var(--text);
+}
+.markdown-body h2 {
+    font-size: 18px; font-weight: 600; color: var(--text);
+    margin: 32px 0 12px 0; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+.markdown-body h3 {
+    font-size: 14px; font-weight: 600; color: var(--text);
+    text-transform: uppercase; letter-spacing: 0.04em; margin: 22px 0 8px 0;
+}
+.markdown-body p, .markdown-body li { color: var(--text-2); }
+.markdown-body strong { color: var(--text); font-weight: 600; }
+.markdown-body a { color: #60a5fa; text-decoration: none; }
+.markdown-body a:hover { text-decoration: underline; }
+.markdown-body blockquote {
+    border-left: 2px solid var(--warn);
+    background: rgba(245,158,11,0.06);
+    margin: 16px 0; padding: 10px 16px; border-radius: 0 6px 6px 0;
+    color: var(--text);
+}
+.markdown-body code {
+    background: rgba(255,255,255,0.06); color: #e5e7eb;
+    padding: 1px 6px; border-radius: 4px; font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.markdown-body pre {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px; overflow-x: auto;
+}
+.markdown-body pre code { background: none; padding: 0; color: var(--text-2); }
+.markdown-body table {
+    border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 13px;
+}
+.markdown-body th, .markdown-body td {
+    border: 1px solid var(--border); padding: 8px 12px; text-align: left;
+}
+.markdown-body th { color: var(--text-2); text-transform: uppercase;
+    font-size: 11px; letter-spacing: 0.04em; font-weight: 600; }
+.markdown-body td { color: var(--text-2); }
+.markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
+
 /* ── Loading ──────────────────────────────────────────────────────────────── */
 ._dash-loading { color: var(--text-2); }
