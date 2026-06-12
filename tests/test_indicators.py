@@ -15,7 +15,10 @@ import pytest
 
 from nullquant.features.indicators import (
     atr,
+    atr_normalized_momentum,
+    cross_sectional_mad_zscore,
     cross_sectional_rank,
+    funding_rank_signal,
     momentum,
     realized_vol,
     risk_adjusted_momentum,
@@ -280,3 +283,125 @@ class TestCrossSectionalRank:
         assert ranks.iloc[0]["A"] < ranks.iloc[0]["B"], (
             "Lower score should yield lower rank"
         )
+
+
+# ---------------------------------------------------------------------------
+# Cross-Sectional MAD Z-Score (LTR drift-neutral feature transform)
+# ---------------------------------------------------------------------------
+
+def _panel(n: int = 80, m: int = 8, seed: int = 3) -> pd.DataFrame:
+    """A multi-asset numeric panel for cross-sectional transform tests."""
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2020-01-01", periods=n, freq="D")
+    cols = [f"A{i}" for i in range(m)]
+    return pd.DataFrame(rng.standard_normal((n, m)) * 0.05, index=idx, columns=cols)
+
+
+class TestCrossSectionalMadZscore:
+    def test_causality(self):
+        """Per-row across assets => truncating time leaves the prefix identical."""
+        feat = _panel(100, 8)
+        full = cross_sectional_mad_zscore(feat)
+        trunc = cross_sectional_mad_zscore(feat.iloc[:TRUNC])
+        pd.testing.assert_frame_equal(
+            full.iloc[:TRUNC], trunc, check_names=False,
+            obj="cross_sectional_mad_zscore causality",
+        )
+
+    def test_row_centering(self):
+        """The cross-sectional median maps to ~0 each row; spread is symmetric-ish."""
+        feat = _panel(30, 9)
+        z = cross_sectional_mad_zscore(feat)
+        # The per-row median asset should sit very close to 0 after centering.
+        row_med = z.median(axis=1).abs()
+        assert (row_med < 1e-9).all(), "row median of z-scores must be ~0"
+
+    def test_winsorized_bounds(self):
+        """Outputs are bounded to +/- clip even with an extreme outlier."""
+        idx = pd.date_range("2020-01-01", periods=3, freq="D")
+        feat = pd.DataFrame(
+            {"A": [0.0, 0.0, 0.0], "B": [0.0, 0.0, 0.0],
+             "C": [0.01, 0.01, 0.01], "D": [1e6, 1e6, 1e6]},  # D is a blow-up
+            index=idx,
+        )
+        z = cross_sectional_mad_zscore(feat, clip=5.0)
+        assert (z.abs() <= 5.0 + 1e-12).all().all(), "z must be winsorized to +/-clip"
+
+    def test_nan_input_preserved(self):
+        """NaN inputs (warm-up / unlisted) stay NaN so downstream rows are dropped."""
+        feat = _panel(20, 6)
+        feat.iloc[0, :] = np.nan          # whole warm-up row missing
+        feat.iloc[5, 2] = np.nan          # a single unlisted asset
+        z = cross_sectional_mad_zscore(feat)
+        assert z.iloc[0].isna().all(), "all-NaN row must remain NaN"
+        assert np.isnan(z.iloc[5, 2]), "NaN input cell must remain NaN"
+
+    def test_no_cross_sectional_drift(self):
+        """Adding a common per-date level to every asset leaves the z-score
+        unchanged — exactly the market-drift neutralization we rely on."""
+        feat = _panel(40, 8)
+        drift = pd.Series(np.linspace(0.0, 1.0, len(feat)), index=feat.index)
+        shifted = feat.add(drift, axis=0)
+        pd.testing.assert_frame_equal(
+            cross_sectional_mad_zscore(feat),
+            cross_sectional_mad_zscore(shifted),
+            check_names=False, obj="CS-MAD-Z must be invariant to common drift",
+        )
+
+
+# ---------------------------------------------------------------------------
+# ATR-Normalized Momentum (volatility-weighted relative strength)
+# ---------------------------------------------------------------------------
+
+class TestAtrNormalizedMomentum:
+    def test_causality(self):
+        """Full series equals truncated series on the overlapping prefix."""
+        h, l, c = _synthetic_ohlc(100)
+        full = atr_normalized_momentum(c, h, l, lookback=10, atr_period=14)
+        trunc = atr_normalized_momentum(
+            c.iloc[:TRUNC], h.iloc[:TRUNC], l.iloc[:TRUNC], lookback=10, atr_period=14)
+        pd.testing.assert_frame_equal(
+            full.iloc[:TRUNC], trunc, check_names=False,
+            obj="atr_normalized_momentum causality",
+        )
+
+    def test_sign_tracks_move(self):
+        """A strictly rising series gives positive ATR-normalized momentum."""
+        n = 60
+        idx = pd.date_range("2020-01-01", periods=n, freq="D")
+        c = pd.DataFrame({"A": np.arange(100.0, 100.0 + n)}, index=idx)
+        h = c * 1.001
+        l = c * 0.999
+        out = atr_normalized_momentum(c, h, l, lookback=10).dropna()
+        assert (out["A"] > 0).all(), "rising price must give positive momentum"
+
+
+# ---------------------------------------------------------------------------
+# Funding Rank Signal (structural tilt: high funding => bearish)
+# ---------------------------------------------------------------------------
+
+class TestFundingRankSignal:
+    def test_high_funding_scores_low(self):
+        """High positive funding -> low (negative) score; negative funding -> high."""
+        idx = pd.date_range("2020-01-01", periods=4, freq="D")
+        funding = pd.DataFrame(
+            {"HOT": [0.0010, 0.0012, 0.0011, 0.0009],   # crowded longs
+             "MID": [0.0001, 0.0001, 0.0000, 0.0001],
+             "COLD": [-0.0008, -0.0009, -0.0007, -0.0008]},  # shorts pay
+            index=idx,
+        )
+        score = funding_rank_signal(funding)
+        assert (score["HOT"] < score["MID"]).all(), "high funding must score below mid"
+        assert (score["MID"] < score["COLD"]).all(), "negative funding must score above mid"
+
+    def test_missing_funding_is_nan(self):
+        """A missing per-asset funding value flows through as NaN (neutralized
+        to 0 by the consumer, never fabricated here)."""
+        idx = pd.date_range("2020-01-01", periods=3, freq="D")
+        funding = pd.DataFrame(
+            {"A": [0.001, np.nan, 0.001], "B": [-0.001, -0.001, -0.001],
+             "C": [0.0, 0.0, 0.0]},
+            index=idx,
+        )
+        score = funding_rank_signal(funding)
+        assert np.isnan(score.iloc[1]["A"]), "missing funding must stay NaN"

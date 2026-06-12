@@ -88,14 +88,22 @@ def run_backtest(
     # 2) Portfolio vol targeting from the gross-1 strategy's trailing vol.
     r_base = (w_base.shift(1) * asset_ret).sum(axis=1)
     trail_vol = r_base.rolling(s.vol_lookback, min_periods=s.vol_lookback).std() * np.sqrt(TRADING_DAYS)
-    scale = (risk.target_portfolio_vol / trail_vol.replace(0.0, np.nan))
-    scale = scale.shift(1).clip(upper=risk.max_gross_leverage).fillna(0.0)
+    scale = (risk.target_portfolio_vol / trail_vol.replace(0.0, np.nan)).shift(1)
+
+    # 3) Optional confidence sizer (conformal / regime), in [0, 1]. Rather than a
+    #    blunt post-cap multiplier, it modulates the TARGET-VOL allocation itself:
+    #    effective target vol = target_vol * exposure. A tight conformal interval
+    #    (exposure -> 1) lets the book size up to the full vol target (capped by
+    #    max_gross_leverage); a wide one (exposure -> floor) scales it down
+    #    continuously. Applied to the already-lagged scale, so the causal timing
+    #    is unchanged. With exposure_scale=None this is a no-op (identical to a
+    #    plain vol-targeted run).
+    if exposure_scale is not None:
+        exp = exposure_scale.reindex(scale.index).fillna(1.0).clip(0.0, 1.0)
+        scale = scale.mul(exp)
+    scale = scale.clip(upper=risk.max_gross_leverage).fillna(0.0)
 
     w = w_base.mul(scale, axis=0)
-
-    # 3) Optional daily exposure gate (regime filter / meta-label), in [0, 1].
-    if exposure_scale is not None:
-        w = w.mul(exposure_scale.reindex(w.index).fillna(1.0).clip(0.0, 1.0), axis=0)
 
     # 4) Caps.
     w = _apply_caps(w, risk.max_asset_weight, risk.max_gross_leverage)

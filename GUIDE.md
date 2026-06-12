@@ -154,21 +154,36 @@ what it's better at — learning **order, regimes, relationships, and certainty*
 - **Regime-switching (HMM)** — discovers **hidden market "moods"** (e.g. calm
   trending vs choppy) and **switches which strategy runs** in each mood.
 - **Lead–lag network** — learns whether some coins **move first and others
-  follow**, then trades the followers after a leader moves.
+  follow**, then trades the followers after a leader moves. It also blends in a
+  **structural funding-rate tilt** (see below) so the book isn't pure price-action.
 - **Conformal gate** — the clever one. It doesn't predict direction; it produces
-  a **statistically honest confidence level** and tells the book to **bet big only
-  when it's genuinely confident, and shrink when it isn't**. Its confidence claims
-  are *calibrated* — when it says "90% sure," it's right ~90% of the time (we check
-  this: it scored 90.9%).
+  a **statistically honest confidence level** and tells the book **how much to
+  bet**: size up toward the full risk target when the model is confident (its
+  prediction interval is tight), scale down continuously when it isn't. Its
+  confidence claims are *calibrated* — when it says "90% sure," it's right ~90% of
+  the time (we check this: it scored **90.7%**).
+
+**A new structural input — funding rates.** Perpetual-swap "funding" is a small
+fee the crowded side of a leveraged bet pays the other side. Persistently **high
+positive** funding means everyone is piling into longs — a classic setup for a
+sharp reversal — so we read it as a **bearish** cross-sectional tilt; **negative**
+funding is a tailwind. We pull it from Binance (cached locally; the system runs
+fine without it) and feed it to the ranking models as an *exogenous* signal that
+price charts alone don't contain.
 
 ### Ablation (the "with vs without" test)
 The decisive experiment: run the strategy **with** each model and **without** it,
 on the same data, and see if it **actually improves the money made** out-of-sample.
-A model that doesn't help gets **shelved**, no matter how fancy. The honest result:
-the three "predicting" models (rank, regime, lead–lag) all got **shelved** — they
-made things worse. But the **conformal confidence gate genuinely helped**: it
-roughly **6×'d the risk-adjusted return** (Sharpe 0.05 → 0.33) and **cut the worst
-loss from −60% to −40%**. (Even so, none beat just holding Bitcoin — beta is hard.)
+A model that doesn't help gets **shelved**, no matter how fancy. The honest result
+(on the last 6 years, 2020–2026): the three "predicting" models (rank, regime,
+lead–lag) all got **shelved** — they made things worse. The **conformal confidence
+gate genuinely helped**, but modestly: it lifts the baseline Sharpe **0.10 → 0.12**
+with lower drawdown and risk, while now staying **~94% invested** (a continuous
+sizer) rather than parking in cash. Crucially, an earlier *binary* version of the
+gate looked far more impressive (Sharpe 0.05 → 0.33) — but most of that came from
+**sitting in cash through bad stretches**, i.e. market-timing, not smarter sizing.
+Forced to stay invested, the honest lift is real but small. (And even so, none beat
+just holding Bitcoin — beta is hard.)
 
 ---
 
@@ -204,7 +219,7 @@ pip install -r requirements.txt
 
 # the three things you can do:
 ./run.sh             # run the full research pipeline (prints results, saves charts)
-./run.sh tests       # run the automated checks (43 of them)
+./run.sh tests       # run the automated checks (71 of them)
 ./run.sh dashboard   # open the interactive visual dashboard in your browser
 ```
 
@@ -229,9 +244,10 @@ After `./run.sh`, look at the printed table and `research/results/`:
   as costs grow; a fragile one collapses. The plain baseline collapses by ~1×
   costs; the **conformal-gated** baseline stays positive out to ~2×.
 - **ML diagnostics (`summary.json` / ML Intel panel).** The truth-tellers: rank IC
-  ≈ −0.04 (no ranking skill), lead-lag hit-rate ≈ 0.51 (coin-flip), regime mostly
-  collapses to trend — all shelved; but conformal coverage ≈ 0.91 (calibration
-  works) and it lifts the baseline Sharpe to 0.33.
+  ≈ −0.006 (no ranking skill — but no longer *inverse*, which the refit fixed),
+  lead-lag hit-rate ≈ 0.51 (coin-flip), regime trend-dominated (~87%) — all
+  shelved; but conformal coverage ≈ 0.91 (calibration works) and it lifts the
+  baseline Sharpe 0.10 → 0.12 while staying nearly fully invested.
 
 **What a full "win" would have looked like:** a strategy Sharpe clearly *above*
 the benchmarks, staying positive across the cost sweep, with a Deflated Sharpe
@@ -260,17 +276,17 @@ To a serious quant employer that is a **strong** result, because it demonstrates
 ```
 config/config.yaml      All the settings (which coins, risk level, costs) in one place.
 nullquant/
-  data/        Downloads & organizes the price history (no future-peeking).
-  features/    Turns raw prices into indicators (averages, volatility) and labels.
+  data/        Downloads & organizes price history + perp funding rates (no future-peeking).
+  features/    Turns raw prices into indicators (averages, volatility, cross-sectional scores) and labels.
   signals/     Decides which coins to long/short each week.
   portfolio/   The cost model + the trading simulator (the backtest).
   metrics/     Scores performance (Sharpe, drawdown, the lie-detector Sharpe).
   validation/  The honest-testing machinery (walk-forward, purged CV).
-  ml/          The three reframed machine-learning models.
+  ml/          The four reframed models (rank, regime, lead-lag, conformal) + funding tilt.
   ablation.py  The "does the ML actually help?" experiment.
   pipeline.py  Runs everything end-to-end and saves results.
 dashboard.py   The interactive visual app.
-tests/         43 automated checks that the math is correct and nothing cheats.
+tests/         71 automated checks that the math is correct and nothing cheats.
 research/report.md   The formal write-up of methodology and findings.
 ```
 
@@ -302,6 +318,7 @@ research/report.md   The formal write-up of methodology and findings.
 | Learning-to-Rank | ML that predicts the *order* of winners/losers (not prices) |
 | HMM regime-switching | ML that finds hidden market "moods" and switches strategy |
 | Lead–lag network | ML that learns which coins move first and which follow |
-| Conformal prediction | Calibrated confidence; bet big only when genuinely sure |
+| Conformal prediction | Calibrated confidence; size bets by how certain the model is |
+| Funding rate | Fee the crowded side of a perpetual-swap bet pays; high = crowded longs (bearish tilt) |
 
 For the rigorous version of all this, see [`research/report.md`](research/report.md).

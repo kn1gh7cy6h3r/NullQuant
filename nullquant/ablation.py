@@ -98,8 +98,9 @@ def compute_signals(panel: Panel, cfg: Config) -> tuple[dict[str, pd.DataFrame],
 
 def _signals_fingerprint(panel: Panel, cfg: Config) -> str:
     """Stable short hash of everything that affects the ML signals: the full
-    config, the universe, the date span, and the close prices themselves (so a
-    data revision or a fresh day invalidates the cache)."""
+    config, the universe, the date span, the close prices, AND the funding panel
+    (which now feeds the LTR/lead-lag signals) — so a data or funding revision, or
+    a fresh day, invalidates the cache."""
     h = hashlib.sha256()
     h.update(json.dumps(cfg.raw, sort_keys=True, default=str).encode())
     h.update(",".join(panel.assets).encode())
@@ -107,6 +108,11 @@ def _signals_fingerprint(panel: Panel, cfg: Config) -> str:
     h.update(f"{idx[0]}|{idx[-1]}|{len(idx)}".encode())
     h.update(pd.util.hash_pandas_object(panel.close.fillna(0.0), index=True)
              .values.tobytes())
+    if panel.funding is not None:
+        h.update(pd.util.hash_pandas_object(panel.funding.fillna(0.0), index=True)
+                 .values.tobytes())
+    else:
+        h.update(b"no-funding")
     return h.hexdigest()[:16]
 
 

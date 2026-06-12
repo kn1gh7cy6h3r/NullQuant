@@ -72,9 +72,12 @@ def run_pipeline(refresh_signals: bool = False) -> dict:
     set_global_seed(cfg.seed)
 
     print("[pipeline] loading data…")
-    panel = load_history(cfg)
+    panel = load_history(cfg)  # trimmed to data.history_years inside the loader
+    years = int(cfg.get("data.history_years", 0) or 0)
     print(f"[pipeline] {len(panel.assets)} assets, "
-          f"{panel.index.min().date()} -> {panel.index.max().date()}")
+          f"{panel.index.min().date()} -> {panel.index.max().date()} "
+          f"({len(panel.index)} rows, last {years}y), "
+          f"funding={'on' if panel.has_funding else 'off'}")
 
     print("[pipeline] running ablation (fits all four ML models walk-forward)…")
     out = run_ablation(panel, cfg, refresh_signals=refresh_signals)

@@ -157,40 +157,49 @@ def _candidate_directions(panel: Panel, cfg: Config) -> dict[str, pd.DataFrame]:
 # Market-level (cross-sectional) HMM features
 # ===========================================================================
 def _build_market_features(panel: Panel, cfg: Config) -> pd.DataFrame:
-    """Build strictly causal market-level features per date for the HMM.
+    """Build strictly causal, STATIONARY "market-texture" features for the HMM.
 
-    Every column is backward-looking at date t:
-      * cs_mean_ret      — cross-sectional mean of daily log-returns
-      * cs_disp_ret      — cross-sectional dispersion (std across assets)
-      * avg_realized_vol — average realized vol across assets
-      * btc_trailing_ret — BTC trailing return over the momentum lookback
-      * mean_abs_ret     — cross-sectional mean absolute return (stress proxy)
+    The previous feature set included DIRECTIONAL terms (cross-sectional mean
+    return, BTC trailing return). In a market that drifts up most days, those
+    terms carry almost all the variance, so the HMM's dominant axis becomes
+    "up vs down" and one trend state swallows ~all the mass — the controller
+    goes comatose. We therefore strip every price-level / directional / drifting
+    term and feed the HMM only scale-free texture that describes the CHARACTER of
+    the tape, not its direction. Every column is backward-looking at date t:
+
+      * cs_dispersion    — cross-sectional std of daily log-returns across assets
+                           (how much names are pulling apart: trend vs chop)
+      * avg_realized_vol — average realized vol across assets (calm vs stressed)
+      * vol_to_vol       — mean over assets of relative-volume / realized-vol
+                           (participation per unit of risk; a liquidity texture)
+      * ret_skew         — mean over assets of each asset's rolling return skew
+                           (crash vs melt-up asymmetry)
+
+    Volume is reduced to RELATIVE volume (over its own rolling mean) before use so
+    the feature is scale-free and stationary rather than a drifting level.
     """
     rets = panel.log_returns()
-    vol_lookback = int(cfg.strategy.vol_lookback)
-    mom_lookback = int(cfg.strategy.momentum_lookback)
+    w = int(cfg.strategy.vol_lookback)
 
-    cs_mean_ret = rets.mean(axis=1, skipna=True)
-    cs_disp_ret = rets.std(axis=1, skipna=True)
-    mean_abs_ret = rets.abs().mean(axis=1, skipna=True)
+    cs_dispersion = rets.std(axis=1, skipna=True)
 
-    realized = ind.realized_vol(panel.close, vol_lookback, annualize=False)
+    realized = ind.realized_vol(panel.close, w, annualize=False)
     avg_realized_vol = realized.mean(axis=1, skipna=True)
 
-    # BTC trailing return over the momentum lookback (a broad-market proxy).
-    btc_col = next((c for c in panel.close.columns if str(c).upper().startswith("BTC")), None)
-    if btc_col is not None:
-        btc_trailing_ret = ind.momentum(panel.close, mom_lookback)[btc_col]
-    else:
-        btc_trailing_ret = pd.Series(0.0, index=panel.close.index)
+    # Relative volume (scale-free) over its own trailing mean, per unit of vol.
+    volume = panel.field("Volume")
+    rel_volume = volume / volume.rolling(w, min_periods=w).mean()
+    vol_to_vol = (rel_volume / realized.replace(0.0, np.nan)).mean(axis=1, skipna=True)
+
+    # Rolling per-asset return skewness, averaged across the universe.
+    ret_skew = rets.rolling(w, min_periods=w).skew().mean(axis=1, skipna=True)
 
     feats = pd.DataFrame(
         {
-            "cs_mean_ret": cs_mean_ret,
-            "cs_disp_ret": cs_disp_ret,
+            "cs_dispersion": cs_dispersion,
             "avg_realized_vol": avg_realized_vol,
-            "btc_trailing_ret": btc_trailing_ret,
-            "mean_abs_ret": mean_abs_ret,
+            "vol_to_vol": vol_to_vol,
+            "ret_skew": ret_skew,
         },
         index=panel.close.index,
     )

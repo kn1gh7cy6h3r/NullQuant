@@ -13,7 +13,8 @@ Panels (fixed sidebar, one at a time):
   Positions · current target weights + weight history heatmap
   Signals   · per-asset trend state and latest direction
   Costs     · Sharpe vs cost-multiplier robustness curve
-  ML Intel  · RF meta AUC, regime stats, LSTM-vs-random-walk (honest)
+  ML Intel  · per-model truth-tellers: LTR rank IC, regime occupancy,
+              lead-lag hit-rate (+ funding tilt), conformal coverage/exposure
 
 Styling lives in assets/nullquant.css; sidebar navigation in assets/nullquant.js.
 """
@@ -257,20 +258,37 @@ def _stat(label, value, color=TEXT, sub=""):
     ])
 
 
+def _cost_survival(R: dict) -> str:
+    """Largest cost multiplier at which the conformal-gated Sharpe is still > 0
+    — derived from the live cost sweep, so the verdict can never drift stale."""
+    cs = R.get("cost_sweep")
+    try:
+        positive = cs.index[cs["gated_sharpe"] > 0]
+        return f"~{positive.max():g}×" if len(positive) else "0×"
+    except Exception:
+        return "~1×"
+
+
 def overview_panel(R: dict) -> html.Div:
     m = R["metrics"]
     base, btc = m["baseline"], m["[bench] btc_hold"]
     gated = m.get("baseline +conformal", base)
+    span = f"{R['panel'].index.min().year}–{R['panel'].index.max().year}"
+    con = R["diagnostics"].get("conformal", {})
+    mean_exp = con.get("mean_exposure", float("nan"))
     verdict = (
-        "Honest, out-of-sample finding (2019–2026): the three ML signal generators "
+        f"Honest, out-of-sample finding ({span}): the three ML signal generators "
         "(learning-to-rank, regime-switching, lead-lag) all UNDERPERFORM the simple "
-        "baseline — confirmed by their truth-teller diagnostics in ML Intel. But the "
-        "conformal confidence gate is a genuine win: it lifts the baseline Sharpe "
-        f"{base['sharpe']:.2f} → {gated['sharpe']:.2f}, cuts max drawdown "
-        f"{base['max_drawdown']*100:.0f}% → {gated['max_drawdown']*100:.0f}%, and "
-        "stays positive out to ~2× costs (see Costs). Even so, no variant beats "
-        "buy-and-hold in a crypto bull market — beta is hard to beat. The value is "
-        "the rigor and the honesty, plus one component (conformal) that demonstrably helps."
+        "baseline — confirmed by their truth-teller diagnostics in ML Intel. The "
+        "conformal confidence gate is the one validated, if modest, win: as a "
+        "continuous inverse-width sizer it now deploys "
+        f"{mean_exp*100:.0f}% mean exposure (vs the old binary gate's cash-parking) "
+        f"and still lifts the baseline Sharpe {base['sharpe']:.2f} → {gated['sharpe']:.2f}, "
+        f"trims max drawdown {base['max_drawdown']*100:.0f}% → {gated['max_drawdown']*100:.0f}%, "
+        f"and stays positive out to {_cost_survival(R)} costs (see Costs). The earlier "
+        "binary gate's larger lift was substantially a market-timing-by-sitting-in-cash "
+        "artifact. Even so, no variant beats buy-and-hold in a crypto bull market — beta "
+        "is hard to beat. The value is the rigor, the honesty, and one component that helps."
     )
     return html.Div(children=[
         html.Div("Overview", className="panel-title"),
@@ -396,20 +414,26 @@ def ml_panel(R: dict) -> html.Div:
     ll = d.get("leadlag")
     if ll:
         hit = ll["oos_hit_rate"]
+        tilt = "blended" in ll.get("status", "")
         ll_body = [_big(f"{hit*100:.1f}%", POS if hit > 0.52 else NEG),
                    _note("OOS next-day hit-rate vs 50% coin-flip"),
+                   _note("book = price lead-lag + structural funding tilt"
+                         if tilt else "funding tilt off (no funding data)"),
                    _note(f"as a signal: Sharpe {sharpe_of('lead-lag'):.2f} (worse than baseline)")]
     else:
         ll_body = [_big("n/a", TEXT2)]
 
-    # Conformal (the win)
+    # Conformal (the validated, modest win)
     con = d.get("conformal")
     if con:
         cov = con["empirical_coverage"]
+        delta = sharpe_of('baseline +conformal') - sharpe_of('baseline')
         con_body = [_big(f"{cov*100:.1f}% cover", POS if abs(cov - 0.9) < 0.04 else WARN),
-                    _note(f"calibration target 90% · mean exposure {con['mean_exposure']*100:.0f}%"),
+                    _note(f"calibration target 90% · continuous inverse-width sizer"),
+                    _note(f"mean exposure {con['mean_exposure']*100:.0f}% (deploys, not cash-parks)"),
                     _note(f"lifts baseline Sharpe {sharpe_of('baseline'):.2f} → "
-                          f"{sharpe_of('baseline +conformal'):.2f} ✓")]
+                          f"{sharpe_of('baseline +conformal'):.2f} "
+                          f"({'+' if delta >= 0 else ''}{delta:.2f})")]
     else:
         con_body = [_big("n/a", TEXT2)]
 
@@ -423,12 +447,13 @@ def ml_panel(R: dict) -> html.Div:
         html.Div(className="ml-grid", style=dict(gridTemplateColumns="repeat(2,1fr)"), children=[
             card("Learning-to-Rank", "rank coins, long top / short bottom", ltr_body),
             card("Regime-Switching (HMM)", "switch strategy per hidden regime", reg_body),
-            card("Lead–Lag Network", "trade laggards on leader moves", ll_body),
-            card("Conformal Gate", "calibrated confidence → exposure", con_body, win=True),
+            card("Lead–Lag Network", "trade laggards on leader moves + funding tilt", ll_body),
+            card("Conformal Gate", "calibrated confidence → continuous exposure", con_body, win=True),
         ]),
         html.Div("Pre-committed rule: a model must prove out-of-sample lift or be shelved. "
                  "The three signal generators do NOT beat the baseline; the conformal gate "
-                 "DOES (and stays positive out to ~2× costs). Model outputs, not financial advice.",
+                 "DOES — a modest but validated lift (and the old binary gate's larger lift "
+                 "was largely a sit-in-cash artifact). Model outputs, not financial advice.",
                  className="ml-disclaimer"),
     ])
 
@@ -490,8 +515,9 @@ app.layout = html.Div(className="app", children=[
             _panel("costs", "scroll pad", [
                 html.Div("Cost robustness — Sharpe vs cost multiplier", className="panel-title"),
                 dcc.Graph(id="cost-chart", config=_GRAPH_CFG, style=dict(height="420px")),
-                html.Div("Even at zero cost the edge is marginal; it does not survive "
-                         "realistic friction.", className="ml-disclaimer"),
+                html.Div("The conformal-gated baseline beats the plain baseline at every "
+                         "cost level, but the lift is modest and fades as costs rise — a "
+                         "real but fragile edge, not robust alpha.", className="ml-disclaimer"),
             ]),
             _panel("ml", "scroll pad", [html.Div(id="ml-content")]),
             # Static plain-English guide rendered in-app (no callback needed).

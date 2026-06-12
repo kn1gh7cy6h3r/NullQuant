@@ -96,56 +96,60 @@ class LTRResult:
 
 
 # Fixed feature-column order so the model input is reproducible across refits.
+# Every feature fed to the LTR model is CROSS-SECTIONALLY NORMALIZED (robust
+# MAD z-score across the 8-asset universe at each date), which strips the common
+# crypto drift factor and leaves only RELATIVE strength — the only thing a
+# cross-sectional ranker should ever trade on. Absolute/directional inputs
+# (raw price-vs-SMA distance, trend sign, absolute momentum levels) are
+# deliberately excluded: they leak market beta into a relative ranking and were
+# the source of the model's inverse (negative) rank IC.
 def _feature_columns(lookbacks: list[int]) -> list[str]:
-    cols = [f"mom_{lb}" for lb in lookbacks]
+    cols = [f"csz_mom_{lb}" for lb in lookbacks]       # CS-z'd raw momentum
+    cols += [f"csz_atrmom_{lb}" for lb in lookbacks]   # CS-z'd vol-weighted RS
     cols += [
-        "rvol",        # realized vol over cfg.strategy.vol_lookback
-        "rsi14",       # Wilder RSI(14)
-        "dist_sma50",  # (Close - SMA_short) / SMA_short
-        "trend_sign",  # sign(SMA_short - SMA_long)
-        "mom_rank",    # cross-sectional rank of the longest-lookback momentum
-        "vol_rank",    # cross-sectional rank of realized vol
+        "csz_rvol",    # CS-z'd realized vol (relative riskiness)
+        "csz_rsi14",   # CS-z'd Wilder RSI(14) (relative overbought/oversold)
+        "funding",     # structural funding tilt (high funding -> bearish), CS-z'd
     ]
     return cols
 
 
 def _build_panels(panel: Panel, cfg: Config, lookbacks: list[int]
                   ) -> dict[str, pd.DataFrame]:
-    """Compute every strictly causal feature panel once (dates x assets).
+    """Compute every strictly causal, cross-sectionally normalized feature panel.
 
-    All indicators are backward-looking, so each value at date d uses only
-    information available at d.
+    All indicators are backward-looking (each value at date d uses only info
+    available at d) and are then z-scored ACROSS ASSETS at each date via a robust
+    median/MAD transform, so the model sees relative — not absolute — features.
+    Warm-up rows stay NaN (and are dropped downstream); the funding column is the
+    one exception, neutralized to 0 when absent so it never drops a feature row.
     """
     close = panel.close
+    high = panel.field("High")
+    low = panel.field("Low")
     s = cfg.strategy
+    z = ind.cross_sectional_mad_zscore
 
-    sma_short = ind.sma(close, int(s.sma_short))
-    sma_long = ind.sma(close, int(s.sma_long))
     rvol = ind.realized_vol(close, int(s.vol_lookback), annualize=False)
     rsi14 = ind.rsi(close, 14)
 
-    # Distance of price from the short SMA, normalized.
-    dist_sma50 = (close - sma_short) / sma_short.replace(0.0, np.nan)
-    # Sign of the trend (short vs long SMA): +1 up, -1 down, 0 flat/unknown.
-    trend_sign = np.sign(sma_short - sma_long)
-
     panels: dict[str, pd.DataFrame] = {}
-    mom_panels: dict[int, pd.DataFrame] = {}
     for lb in lookbacks:
-        m = ind.momentum(close, int(lb))
-        panels[f"mom_{lb}"] = m
-        mom_panels[lb] = m
+        panels[f"csz_mom_{lb}"] = z(ind.momentum(close, int(lb)))
+        panels[f"csz_atrmom_{lb}"] = z(
+            ind.atr_normalized_momentum(close, high, low, int(lb), int(s.atr_period))
+        )
+    panels["csz_rvol"] = z(rvol)
+    panels["csz_rsi14"] = z(rsi14)
 
-    panels["rvol"] = rvol
-    panels["rsi14"] = rsi14
-    panels["dist_sma50"] = dist_sma50
-    panels["trend_sign"] = trend_sign
-
-    # Cross-sectional ranks (within each date) of momentum and vol. Use the
-    # longest lookback for the momentum rank (the slowest, most stable signal).
-    longest = max(lookbacks)
-    panels["mom_rank"] = ind.cross_sectional_rank(mom_panels[longest])
-    panels["vol_rank"] = ind.cross_sectional_rank(rvol)
+    # Structural funding feature (high positive funding -> crowded longs ->
+    # bearish cross-sectional tilt). Neutral 0 when funding is unavailable so it
+    # never causes otherwise-valid feature rows to be dropped.
+    if panel.has_funding:
+        funding = panel.funding.reindex(index=close.index, columns=close.columns)
+        panels["funding"] = ind.funding_rank_signal(funding).fillna(0.0)
+    else:
+        panels["funding"] = pd.DataFrame(0.0, index=close.index, columns=close.columns)
     return panels
 
 
