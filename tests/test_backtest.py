@@ -150,6 +150,42 @@ class TestAssetWeightCap:
 # Test 5: BacktestResult has all expected fields
 # ---------------------------------------------------------------------------
 
+class TestExposureSizer:
+    """The conformal/regime exposure modulates the vol-target allocation."""
+
+    def test_exposure_one_equals_none(self, panel, cfg):
+        """A constant exposure of 1.0 must be a no-op vs no exposure at all."""
+        cost_model = CostModel.from_config(cfg)
+        d = _manual_direction(panel)
+        base = run_backtest(panel, d, cfg, cost_model)
+        exp_one = pd.Series(1.0, index=panel.close.index)
+        gated = run_backtest(panel, d, cfg, cost_model, exposure_scale=exp_one)
+        np.testing.assert_allclose(
+            gated.weights.values, base.weights.values, rtol=1e-12, atol=1e-12,
+            err_msg="exposure=1.0 must reproduce the un-gated book exactly",
+        )
+
+    def test_exposure_zero_flattens_book(self, panel, cfg):
+        """A zero exposure must flatten the book and zero out returns."""
+        cost_model = CostModel.from_config(cfg)
+        d = _manual_direction(panel)
+        exp_zero = pd.Series(0.0, index=panel.close.index)
+        res = run_backtest(panel, d, cfg, cost_model, exposure_scale=exp_zero)
+        assert (res.weights.abs().sum(axis=1) < EPSILON).all(), "book must be flat"
+        assert (res.gross_returns.abs() < EPSILON).all(), "returns must be ~0"
+
+    def test_partial_exposure_reduces_leverage(self, panel, cfg):
+        """A uniform exposure of 0.5 must not increase leverage on any day."""
+        cost_model = CostModel.from_config(cfg)
+        d = _manual_direction(panel)
+        base = run_backtest(panel, d, cfg, cost_model)
+        half = run_backtest(panel, d, cfg, cost_model,
+                            exposure_scale=pd.Series(0.5, index=panel.close.index))
+        assert (half.leverage.values <= base.leverage.values + EPSILON).all(), (
+            "down-scaling exposure must never raise gross leverage"
+        )
+
+
 class TestBacktestResultShape:
     def test_result_fields_present(self, backtest_result, panel):
         """BacktestResult must expose the documented attributes."""

@@ -53,6 +53,7 @@ import pandas as pd
 
 from ..config import Config
 from ..data.loader import Panel
+from ..features import indicators as ind
 from ..seeds import set_global_seed
 
 # A directed lead-lag edge: (leader, follower, lag, strength).
@@ -182,6 +183,10 @@ def leadlag_signal(panel: Panel, cfg: Config) -> LeadLagResult:
         top_k = int(cfg.strategy.top_k)
         bottom_k = int(cfg.strategy.bottom_k)
         rebalance = str(cfg.strategy.rebalance)
+        # Weight of the structural funding tilt blended into the book (0 = pure
+        # price-action lead-lag). Funding is exogenous to price, so it adds the
+        # cross-exchange structural signal that daily price lead-lag lacks.
+        funding_weight = float(cfg.get("ml.leadlag.funding_weight", 0.5))
     except Exception as exc:  # pragma: no cover - misconfiguration guard
         return LeadLagResult(
             direction=direction, oos_hit_rate=float("nan"),
@@ -275,12 +280,31 @@ def leadlag_signal(panel: Panel, cfg: Config) -> LeadLagResult:
         oos_hit_rate = float("nan")
 
     # --- build the long/short book -----------------------------------------
-    # Rank by predicted signal on each rebalance date; hold until the next one.
+    # The book trades a BLEND of (a) the price-action lead-lag prediction and
+    # (b) the structural funding tilt. Both legs are put on a common robust
+    # cross-sectional z-scale first so neither swamps the other, then summed:
+    #
+    #   book_score = z(pred_signal) + funding_weight * funding_rank_signal
+    #
+    # where funding_rank_signal already encodes "high funding -> bearish". The
+    # OOS hit-rate above stays on the PURE lead-lag prediction (the network's own
+    # truth-teller); the funding tilt only shapes position sizing/selection.
+    book_score = ind.cross_sectional_mad_zscore(pred_signal)
+    funding_used = False
+    if funding_weight != 0.0 and panel.has_funding:
+        funding = panel.funding.reindex(index=dates, columns=assets)
+        funding_score = ind.funding_rank_signal(funding)
+        book_score = book_score.add(funding_weight * funding_score, fill_value=0.0)
+        # Keep a row scorable only where the lead-lag prediction itself existed.
+        book_score = book_score.where(pred_signal.notna())
+        funding_used = True
+
+    # Rank by the (blended) book score on each rebalance date; hold until next.
     rebal_dates = panel.close.resample(rebalance).last().index
-    rebal_dates = [d for d in rebal_dates if d in pred_signal.index]
+    rebal_dates = [d for d in rebal_dates if d in book_score.index]
 
     for d in rebal_dates:
-        row = pred_signal.loc[d]
+        row = book_score.loc[d]
         valid = row.notna()
         if int(valid.sum()) == 0:
             continue
@@ -302,11 +326,13 @@ def leadlag_signal(panel: Panel, cfg: Config) -> LeadLagResult:
     direction = direction.ffill().fillna(0.0)
 
     first_oos = dates[lookback].date() if lookback < n_dates else "n/a"
+    tilt = (f"funding tilt blended (weight={funding_weight})" if funding_used
+            else "funding tilt off (no funding data)")
     status = (
         f"ok: walk-forward lead-lag network, max_lag={max_lag}, "
         f"lookback={lookback}, refit_every={refit_every}d, top_edges={top_edges}; "
         f"{n_refits} refits, {n_eval} (asset, OOS day) cells evaluated from "
-        f"{first_oos}; oos_hit_rate={oos_hit_rate:.4f} vs 0.5 baseline"
+        f"{first_oos}; oos_hit_rate={oos_hit_rate:.4f} vs 0.5 baseline; {tilt}"
     )
 
     return LeadLagResult(

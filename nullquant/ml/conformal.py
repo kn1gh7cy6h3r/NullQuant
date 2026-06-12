@@ -39,14 +39,24 @@ CAUSALITY / NO REPAINTING
   before the next refit. Those days were never part of any fit or calibration
   set, so every interval is a real-time forecast.
 
-CONFIDENCE -> EXPOSURE
-----------------------
-An asset is "confidently directional" on an OOS day when |yhat| > q: the whole
-interval [yhat - q, yhat + q] sits on one side of zero, so its sign is trusted.
-The per-DATE exposure is the FRACTION of assets that are confidently directional
-that day, in [0, 1]. It is forward-filled across each refit window and defaults
-to 1.0 during warm-up (before the first calibration exists) — we never gate on
-days we could not have scored.
+CONFIDENCE -> EXPOSURE (two modes)
+----------------------------------
+* binary (legacy): an asset is "confidently directional" on an OOS day when
+  |yhat| > q — the interval [yhat - q, yhat + q] excludes zero — and the per-DATE
+  exposure is the FRACTION of confidently-directional assets, in [0, 1]. This is
+  an on/off cash switch and tends to over-park in cash.
+
+* continuous (default): a NORMALIZED split-conformal interval whose half-width is
+  q * sigma(x) — sigma(x) is the RandomForest's own per-tree disagreement at x,
+  a free local volatility estimate, so the interval BREATHES per asset and per
+  day. Exposure then scales CONTINUOUSLY and ASYMMETRICALLY with the inverse of
+  that width: a tight interval (low local uncertainty) sizes up toward the full
+  vol target (1.0), a wide interval scales smoothly down to a configurable floor.
+  Per date the exposure is the mean of those per-asset scales.
+
+Either way the result is forward-filled across each refit window and defaults to
+1.0 during warm-up (before the first calibration exists) — we never gate on days
+we could not have scored.
 
 HONEST DIAGNOSTIC
 -----------------
@@ -76,6 +86,22 @@ _RSI_PERIOD = 14
 # Approximate trading days per year (crypto trades 365/yr; the rest of the
 # project uses 365, so we stay consistent for window sizing).
 _DAYS_PER_YEAR = 365
+# Small floor to keep the local scale strictly positive in division.
+_SIGMA_EPS = 1e-9
+
+
+def _forest_sigma(model, X: np.ndarray) -> np.ndarray:
+    """Per-row local scale from a fitted RandomForest's tree disagreement.
+
+    The standard deviation of the individual trees' predictions at a point is a
+    cheap, model-internal estimate of LOCAL predictive uncertainty (large where
+    the trees disagree). Using it to normalize the conformal score turns the
+    constant-width split-conformal interval into one whose width adapts per
+    point, which is what lets the sizer breathe continuously. Strictly a function
+    of the already-fitted model and the feature row — no labels, no look-ahead.
+    """
+    preds = np.stack([est.predict(X) for est in model.estimators_], axis=0)
+    return preds.std(axis=0) + _SIGMA_EPS
 
 
 @dataclass
@@ -243,6 +269,11 @@ def conformal_exposure(panel: Panel, cfg: Config) -> ConformalResult:
         train_years = float(cfg.ml.conformal.train_years)
         calib_frac = float(cfg.ml.conformal.calib_frac)
         refit_every = int(cfg.ml.conformal.refit_every)
+        # Continuous asymmetric sizer knobs (sensible defaults so legacy configs
+        # without these keys still run, defaulting to the new continuous gate).
+        mode = str(cfg.get("ml.conformal.mode", "continuous")).lower()
+        gamma = float(cfg.get("ml.conformal.gamma", 1.0))
+        floor = float(cfg.get("ml.conformal.floor", 0.05))
     except Exception as exc:
         return _degrade(f"bad conformal config ({exc}); exposure=1.0")
 
@@ -252,6 +283,10 @@ def conformal_exposure(panel: Panel, cfg: Config) -> ConformalResult:
         )
     if horizon < 1 or refit_every < 1 or n_dates == 0:
         return _degrade("invalid horizon/refit_every or empty panel; exposure=1.0")
+    if mode not in ("continuous", "binary"):
+        return _degrade(f"invalid conformal mode={mode!r}; exposure=1.0")
+    if gamma <= 0.0 or not (0.0 <= floor <= 1.0):
+        return _degrade(f"invalid gamma={gamma} or floor={floor}; exposure=1.0")
 
     train_window = int(round(train_years * _DAYS_PER_YEAR))
     if train_window < 2:
@@ -347,43 +382,71 @@ def conformal_exposure(panel: Panel, cfg: Config) -> ConformalResult:
 
         # --- split-conformal calibration -------------------------------------
         pred_cal = model.predict(X_cal)
-        scores = np.abs(y_cal - pred_cal)            # nonconformity scores
-        # Finite-sample conformal quantile level. Using the (1 - alpha) empirical
-        # quantile of the calibration scores is the standard split-conformal q.
+        abs_resid = np.abs(y_cal - pred_cal)
+        if mode == "continuous":
+            # Normalized (locally-adaptive) nonconformity: residual divided by the
+            # forest's local disagreement, so the OOS interval half-width is
+            # q * sigma(x) and BREATHES per point. ref_sigma is the typical local
+            # scale on the calibration set — the reference "width" we size against.
+            sigma_cal = _forest_sigma(model, X_cal)
+            scores = abs_resid / sigma_cal
+            ref_sigma = float(np.median(sigma_cal))
+        else:
+            scores = abs_resid                       # classic constant-width split
+            ref_sigma = 1.0
+        # Finite-sample conformal quantile level — the (1 - alpha) empirical
+        # quantile of the (possibly normalized) calibration scores.
         q = float(np.quantile(scores, 1.0 - alpha, method="higher"))
         n_refits += 1
 
         # --- OOS scoring window -----------------------------------------------
         oos_lo = T
         oos_hi = min(T + refit_every, n_dates)
+        win = slice(oos_lo, oos_hi)
 
-        # For each OOS feature date in the window, predict per asset and gate.
-        for asset_idx, asset in enumerate(assets):
+        # Score each asset's OOS rows in one batched predict (cheaper, and it lets
+        # us read the forest spread per row for the normalized interval width).
+        for asset in assets:
             block = pd.DataFrame(
                 {c: feats[c][asset] for c in feats.keys()},
                 index=dates,
             )
-            y_asset = target[asset]
-            for pos in range(oos_lo, oos_hi):
-                row = block.iloc[pos]
-                if row.isna().any():
-                    continue
-                yhat = float(model.predict(row.to_numpy(dtype=float).reshape(1, -1))[0])
+            sub = block.iloc[win]
+            ok = sub.notna().all(axis=1).to_numpy()
+            if not ok.any():
+                continue
+            positions = np.arange(oos_lo, oos_hi)[ok]
+            Xa = sub.to_numpy(dtype=float)[ok]
+            yhat = model.predict(Xa)
 
-                # Confidence -> directional gate: interval excludes zero.
-                confident = abs(yhat) > q
-                date_conf_sum[pos] += 1.0 if confident else 0.0
-                date_conf_cnt[pos] += 1.0
-                scored_any[pos] = True
+            if mode == "continuous":
+                sigma = _forest_sigma(model, Xa)
+                half = q * sigma                      # per-row interval half-width
+                # Continuous, asymmetric inverse-width sizing: tight interval
+                # (sigma below the calibration-typical ref) sizes up toward 1.0;
+                # wide interval scales smoothly down, clamped at the floor. The
+                # q's cancel, so this is purely the relative local uncertainty.
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    scale = (ref_sigma / sigma) ** gamma
+                contrib = np.clip(scale, floor, 1.0)
+            else:
+                half = np.full_like(yhat, q)
+                contrib = (np.abs(yhat) > q).astype(float)  # legacy on/off gate
 
-                # Coverage check uses the realized label (known only ex-post, used
-                # purely as a DIAGNOSTIC — it never feeds the live exposure).
-                actual = y_asset.iloc[pos]
-                if np.isfinite(actual):
-                    lo, hi = yhat - q, yhat + q
-                    cover_total += 1
-                    if lo <= actual <= hi:
-                        cover_hits += 1
+            date_conf_sum[positions] += contrib
+            date_conf_cnt[positions] += 1.0
+            scored_any[positions] = True
+
+            # Coverage diagnostic uses the realized label (known only ex-post,
+            # used purely as a DIAGNOSTIC — it never feeds the live exposure).
+            actual = target[asset].to_numpy(dtype=float)[positions]
+            fin = np.isfinite(actual)
+            if fin.any():
+                lo = yhat[fin] - half[fin]
+                hi = yhat[fin] + half[fin]
+                a = actual[fin]
+                cover_total += int(fin.sum())
+                cover_hits += int(((a >= lo) & (a <= hi)).sum())
 
     if n_refits == 0:
         return _degrade(
@@ -413,8 +476,10 @@ def conformal_exposure(panel: Panel, cfg: Config) -> ConformalResult:
     mean_exposure = float(exposure.mean())
 
     first_scored_date = dates[first_scored_pos] if first_scored_pos < n_dates else None
+    sizer = (f"continuous inverse-width sizing (gamma={gamma}, floor={floor})"
+             if mode == "continuous" else "binary on/off gate")
     status = (
-        f"ok: split-conformal gate, horizon={horizon}d, alpha={alpha} "
+        f"ok: split-conformal {sizer}, horizon={horizon}d, alpha={alpha} "
         f"(target coverage {1 - alpha:.2f}), train_window={train_window}d, "
         f"calib_frac={calib_frac}, refit_every={refit_every}d; "
         f"{n_refits} refits, {cover_total} OOS predictions, "

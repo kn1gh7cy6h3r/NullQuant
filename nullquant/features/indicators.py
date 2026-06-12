@@ -94,3 +94,72 @@ def cross_sectional_rank(score: pd.DataFrame) -> pd.DataFrame:
     Used to pick the long (top) and short (bottom) legs each rebalance.
     """
     return score.rank(axis=1, pct=True)
+
+
+# ===========================================================================
+# Cross-sectional, drift-neutral transforms (for the learning-to-rank model)
+# ===========================================================================
+# These operate PER ROW (one timestamp) across the asset columns only. Because a
+# value at date t is computed from other assets *at the same t* — never from any
+# other date — they are causal by construction: truncating the series in time
+# leaves every surviving row unchanged. They exist to strip the common crypto
+# drift factor out of the LTR features so the ranker learns RELATIVE strength
+# rather than "what already went up".
+
+def cross_sectional_mad_zscore(feature: pd.DataFrame, clip: float = 5.0) -> pd.DataFrame:
+    """Robust cross-sectional z-score at each date across the asset universe.
+
+        Z = (x - median_t) / (1.4826 * MAD_t)
+
+    where the median and MAD (median absolute deviation) are taken across assets
+    at each timestamp t. The 1.4826 factor rescales MAD to a normal-consistent
+    standard deviation. Median/MAD (not mean/std) make the normalization robust
+    to the fat tails and single-name blow-ups typical of crypto.
+
+    Strictly per-row across columns, so it introduces no look-ahead. NaN inputs
+    (warm-up, or an asset not yet listed) are PRESERVED as NaN so downstream row
+    filters drop un-warmed observations rather than train on a fabricated 0. Only
+    a finite input on a degenerate row (zero/undefined MAD: < 2 valid assets or
+    all-equal values) maps to 0 — there is genuinely no cross-sectional signal to
+    extract. Outputs are winsorized to +/- ``clip`` to bound extreme outliers.
+    """
+    med = feature.median(axis=1, skipna=True)
+    centered = feature.sub(med, axis=0)
+    mad = centered.abs().median(axis=1, skipna=True) * 1.4826
+    z = centered.div(mad.replace(0.0, np.nan), axis=0)
+    z = z.replace([np.inf, -np.inf], np.nan)
+    # Finite input but undefined z (degenerate MAD) -> neutral 0; NaN input stays NaN.
+    z = z.mask(feature.notna() & z.isna(), 0.0)
+    return z.clip(-clip, clip)
+
+
+def atr_normalized_momentum(close: pd.DataFrame, high: pd.DataFrame,
+                            low: pd.DataFrame, lookback: int,
+                            atr_period: int = 14) -> pd.DataFrame:
+    """Volatility-weighted relative strength: trailing move measured in ATR units.
+
+        (close_t - close_{t-lookback}) / ATR_t
+
+    Dividing the raw move by the Average True Range expresses momentum in units
+    of each asset's own recent range, so a 10% move in a calm coin and a 10% move
+    in a wild coin are placed on a comparable footing before they are ranked
+    cross-sectionally. Backward-looking (ATR and the lagged close are both known
+    at t), hence causal.
+    """
+    a = atr(high, low, close, atr_period)
+    return (close - close.shift(lookback)) / a.replace(0.0, np.nan)
+
+
+def funding_rank_signal(funding: pd.DataFrame, clip: float = 5.0) -> pd.DataFrame:
+    """Structural cross-sectional score from perpetual-swap funding rates.
+
+    Funding is paid by the crowded side of the perp: persistently HIGH POSITIVE
+    funding flags crowded longs that are primed for a long-liquidation cascade /
+    mean reversion — a BEARISH cross-sectional tilt. NEGATIVE funding (shorts
+    paying longs) is a structural TAILWIND — bullish. We therefore robustly
+    cross-sectionally z-score the *negated* funding, so high funding -> low score
+    and negative funding -> high score. Missing funding (no perp / offline) flows
+    through as 0 (neutral). Causal: ``funding`` is aligned to known-at-t values
+    by the loader before it reaches here.
+    """
+    return cross_sectional_mad_zscore(-funding, clip=clip)

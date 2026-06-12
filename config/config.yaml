@@ -23,6 +23,9 @@ data:
   history_years: 6
   cache_dir: "data"
   min_history_days: 250        # drop an asset-day until it has this much history
+  funding:
+    enabled: true              # fetch + cache perp funding rates (Binance); the
+                               # whole system degrades gracefully if unavailable
 
 strategy:
   sma_short: 50                # fast SMA (base crossover trigger)
@@ -82,9 +85,14 @@ ml:
     lookback: 120              # trailing window to estimate the network
     refit_every: 21
     top_edges: 8               # strongest directed edges kept each refit
+    funding_weight: 0.5        # weight of the structural funding tilt in the book
+                               # (0 = pure price-action lead-lag)
 
   conformal:                   # conformal confidence-gated sizing overlay
     alpha: 0.10                # 1 − coverage (0.10 ⇒ 90% prediction intervals)
     train_years: 3
     calib_frac: 0.3            # fraction of the train window held out for calibration
     refit_every: 21
+    mode: continuous           # continuous = inverse-width sizer; binary = legacy gate
+    gamma: 1.0                 # inverse-width exponent (higher = more aggressive sizing)
+    floor: 0.05                # minimum exposure when intervals are very wide

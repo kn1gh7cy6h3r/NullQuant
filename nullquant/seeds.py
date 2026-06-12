@@ -29,5 +29,6 @@ def set_global_seed(seed: int = 42) -> None:
         if torch.cuda.is_available():  # pragma: no cover - no CUDA on mac
             torch.cuda.manual_seed_all(seed)
     except Exception:
-        # torch is optional for the non-LSTM parts of the pipeline.
+        # torch is optional; the current ML layer (sklearn + hmmlearn) doesn't
+        # need it, so its absence is fine.
         pass

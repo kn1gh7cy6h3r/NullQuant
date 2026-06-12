@@ -2,109 +2,109 @@
   "n_trials": 8,
   "best_variant_by_sharpe": "[bench] equal_weight",
   "variants_sharpe": {
-    "baseline": 0.0505,
-    "baseline +conformal": 0.3246,
-    "LTR": -1.1951,
-    "LTR +conformal": -0.8868,
-    "regime": -0.3767,
-    "regime +conformal": -0.754,
-    "lead-lag": -0.4617,
-    "lead-lag +conformal": -0.4434,
-    "[bench] equal_weight": 1.069,
-    "[bench] btc_hold": 0.9168
+    "baseline": 0.1007,
+    "baseline +conformal": 0.1221,
+    "LTR": -0.4817,
+    "LTR +conformal": -0.5301,
+    "regime": -0.3819,
+    "regime +conformal": -0.4338,
+    "lead-lag": -0.357,
+    "lead-lag +conformal": -0.4232,
+    "[bench] equal_weight": 1.1457,
+    "[bench] btc_hold": 0.8384
   },
   "variants_ann_return": {
-    "baseline": -0.0159,
-    "baseline +conformal": 0.0377,
-    "LTR": -0.2639,
-    "LTR +conformal": -0.1355,
-    "regime": -0.0749,
-    "regime +conformal": -0.0096,
-    "lead-lag": -0.1272,
-    "lead-lag +conformal": -0.0626,
-    "[bench] equal_weight": 0.6846,
-    "[bench] btc_hold": 0.4507
+    "baseline": -0.0039,
+    "baseline +conformal": 0.0026,
+    "LTR": -0.1408,
+    "LTR +conformal": -0.1412,
+    "regime": -0.0665,
+    "regime +conformal": -0.0625,
+    "lead-lag": -0.1038,
+    "lead-lag +conformal": -0.1097,
+    "[bench] equal_weight": 0.7894,
+    "[bench] btc_hold": 0.3724
   },
   "variants_deflated_sharpe": {
-    "baseline": 0.0932,
-    "baseline +conformal": 0.2802,
-    "LTR": 0.0,
-    "LTR +conformal": 0.0,
-    "regime": 0.0063,
-    "regime +conformal": 0.0002,
-    "lead-lag": 0.0035,
-    "lead-lag +conformal": 0.0032,
-    "[bench] equal_weight": 0.9982,
-    "[bench] btc_hold": 0.9934
+    "baseline": 0.1127,
+    "baseline +conformal": 0.1231,
+    "LTR": 0.0036,
+    "LTR +conformal": 0.0024,
+    "regime": 0.0081,
+    "regime +conformal": 0.0057,
+    "lead-lag": 0.0096,
+    "lead-lag +conformal": 0.006,
+    "[bench] equal_weight": 0.9978,
+    "[bench] btc_hold": 0.9802
   },
   "ml_diagnostics": {
     "ltr": {
-      "rank_ic": -0.03644586326150573,
-      "ic_hit": 0.4553072625698324,
-      "n_refits": 120,
-      "status": "ok: walk-forward LTR (RandomForestRegressor, n_estimators=300), horizon=5d, train_years=3.0, refit_every=21d, 120 refits; long top_k=3/short bottom_k=3 on 'W' rebalances; OOS scores from 2019-07-25; rank_ic=-0.0364 over 358 rebalance dates"
+      "rank_ic": -0.005733397037744865,
+      "ic_hit": 0.5083612040133779,
+      "n_refits": 100,
+      "status": "ok: walk-forward LTR (RandomForestRegressor, n_estimators=300), horizon=5d, train_years=3.0, refit_every=21d, 100 refits; long top_k=3/short bottom_k=3 on 'W' rebalances; OOS scores from 2020-09-16; rank_ic=-0.0057 over 299 rebalance dates"
     },
     "regime": {
       "n_states": 3,
       "mapping": {
-        "0": "MEANREV",
+        "0": "TREND",
         "1": "TREND",
-        "2": "TREND"
+        "2": "MEANREV"
       },
       "occupancy": {
-        "TREND": 0.878016960208741,
-        "MEANREV": 0.12198303979125896,
+        "TREND": 0.872539831302718,
+        "MEANREV": 0.1274601686972821,
         "FLAT": 0.0
       },
-      "status": "ok: walk-forward GaussianHMM(n_states=3, cov=diag), train_rows=1095, refit_every=21d, rebalance=W; 1533 OOS days decoded from 2022-03-31; switching across 2 sub-strategies (TREND=88%, MEANREV=12%); last mapping: 0->MEANREV, 1->TREND, 2->TREND"
+      "status": "ok: walk-forward GaussianHMM(n_states=3, cov=diag), train_rows=1095, refit_every=21d, rebalance=W; 1067 OOS days decoded from 2023-07-12; switching across 2 sub-strategies (TREND=87%, MEANREV=13%); last mapping: 0->TREND, 1->TREND, 2->MEANREV"
     },
     "leadlag": {
-      "oos_hit_rate": 0.508166295471418,
+      "oos_hit_rate": 0.506109121550453,
       "top_edges": [
         [
-          "ADA-USD",
-          "XRP-USD",
-          1,
-          -0.2057121410037664
+          "LTC-USD",
+          "BNB-USD",
+          5,
+          0.2358613392671619
         ],
         [
           "LTC-USD",
           "XRP-USD",
           1,
-          -0.20494949071026858
+          -0.2290148007739508
+        ],
+        [
+          "ADA-USD",
+          "XRP-USD",
+          1,
+          -0.2244494166142913
         ],
         [
           "BTC-USD",
           "XRP-USD",
           1,
-          -0.19348544634822976
+          -0.21140256697153076
+        ],
+        [
+          "ADA-USD",
+          "DOGE-USD",
+          1,
+          -0.20091412544236364
         ],
         [
           "SOL-USD",
           "BTC-USD",
           3,
-          -0.18936011582295625
-        ],
-        [
-          "XRP-USD",
-          "BTC-USD",
-          1,
-          -0.18882872758387279
-        ],
-        [
-          "LTC-USD",
-          "BNB-USD",
-          5,
-          0.18629841958137186
+          -0.19948525039784235
         ]
       ],
-      "status": "ok: walk-forward lead-lag network, max_lag=5, lookback=120, refit_every=21d, top_edges=8; 107 refits, 10776 (asset, OOS day) cells evaluated from 2019-05-01; oos_hit_rate=0.5082 vs 0.5 baseline"
+      "status": "ok: walk-forward lead-lag network, max_lag=5, lookback=120, refit_every=21d, top_edges=8; 99 refits, 9494 (asset, OOS day) cells evaluated from 2020-10-10; oos_hit_rate=0.5061 vs 0.5 baseline; funding tilt blended (weight=0.5)"
     },
     "conformal": {
-      "empirical_coverage": 0.9086329820210788,
-      "mean_exposure": 0.4157468727005151,
-      "n_refits": 78,
-      "status": "ok: split-conformal gate, horizon=5d, alpha=0.1 (target coverage 0.90), train_window=1095d, calib_frac=0.3, refit_every=21d; 78 refits, 12904 OOS predictions, empirical_coverage=0.909, mean_exposure=0.416; first scored 2022-01-05, warm-up exposure=1.0"
+      "empirical_coverage": 0.906508739650414,
+      "mean_exposure": 0.9378077121868706,
+      "n_refits": 52,
+      "status": "ok: split-conformal continuous inverse-width sizing (gamma=1.0, floor=0.05), horizon=5d, alpha=0.1 (target coverage 0.90), train_window=1095d, calib_frac=0.3, refit_every=21d; 52 refits, 8696 OOS predictions, empirical_coverage=0.907, mean_exposure=0.938; first scored 2023-06-17, warm-up exposure=1.0"
     }
   }
 }
